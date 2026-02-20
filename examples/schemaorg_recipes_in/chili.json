@@ -1,0 +1,29 @@
+{
+  "@context": "https://schema.org",
+  "@type": "Recipe",
+  "name": "Weeknight Chili",
+  "description": "Simple beef-and-bean chili for weeknights.",
+  "recipeYield": "4 servings",
+  "prepTime": "PT15M",
+  "cookTime": "PT45M",
+  "totalTime": "PT1H",
+  "recipeIngredient": [
+    "1 tbsp olive oil",
+    "1 lb ground beef",
+    "1 yellow onion, diced",
+    "2 cloves garlic, minced",
+    "2 tbsp chili powder",
+    "1 tsp cumin",
+    "1 can diced tomatoes",
+    "1 can kidney beans, drained",
+    "1 cup beef broth",
+    "Salt to taste"
+  ],
+  "recipeInstructions": [
+    "Heat oil in a pot over medium heat.",
+    "Brown beef, then add onion and garlic and cook until soft.",
+    "Stir in chili powder and cumin for 30 seconds.",
+    "Add tomatoes, beans, and broth; simmer 35 minutes.",
+    "Season with salt and serve hot."
+  ]
+}

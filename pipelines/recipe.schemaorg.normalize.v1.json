@@ -1,0 +1,13 @@
+{
+  "pipeline_id": "recipe.schemaorg.normalize.v1",
+  "description": "Normalize Schema.org Recipe JSON into a stable subset shape without inventing details.",
+  "prompt_template_path": "prompts/recipe_schemaorg_normalize_v1.txt",
+  "output_schema_path": "schemas/schemaorg_recipe_subset_v1.schema.json",
+  "input_glob_default": "**/*.json",
+  "output_ext": ".json",
+  "codex_model": "gpt-5.3-codex-spark",
+  "codex_sandbox": "read-only",
+  "codex_ask_for_approval": "never",
+  "codex_web_search": "disabled",
+  "codex_timeout_seconds": 180
+}
