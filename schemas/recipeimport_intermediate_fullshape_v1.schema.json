@@ -1,0 +1,279 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RecipeImport Intermediate Recipe JSON-LD Full Shape v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "@context",
+    "@id",
+    "@type",
+    "identifier",
+    "name",
+    "datePublished",
+    "description",
+    "recipeYield",
+    "recipeIngredient",
+    "recipeInstructions",
+    "keywords",
+    "image",
+    "recipeCategory",
+    "recipeCuisine",
+    "cookingMethod",
+    "suitableForDiet",
+    "author",
+    "publisher",
+    "dateModified",
+    "creditText",
+    "url",
+    "isBasedOn",
+    "tool",
+    "supply",
+    "nutrition",
+    "video",
+    "prepTime",
+    "cookTime",
+    "totalTime",
+    "comment",
+    "aggregateRating",
+    "recipeimport:confidence",
+    "recipeimport:provenance"
+  ],
+  "properties": {
+    "@context": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "@id": {
+      "type": ["string", "null"]
+    },
+    "@type": {
+      "type": "string",
+      "const": "Recipe"
+    },
+    "identifier": {
+      "type": ["string", "null"]
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "datePublished": {
+      "type": ["string", "null"]
+    },
+    "description": {
+      "type": ["string", "null"]
+    },
+    "recipeYield": {
+      "type": ["string", "null"]
+    },
+    "recipeIngredient": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "recipeInstructions": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "string",
+            "minLength": 1
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "@type",
+              "text",
+              "timeSeconds",
+              "temperature",
+              "temperatureUnit"
+            ],
+            "properties": {
+              "@type": {
+                "type": "string",
+                "const": "HowToStep"
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              },
+              "timeSeconds": {
+                "type": ["integer", "null"],
+                "minimum": 0
+              },
+              "temperature": {
+                "type": ["number", "null"]
+              },
+              "temperatureUnit": {
+                "type": ["string", "null"]
+              }
+            }
+          }
+        ]
+      }
+    },
+    "keywords": {
+      "type": ["string", "null"]
+    },
+    "image": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "recipeCategory": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "recipeCuisine": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "cookingMethod": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "suitableForDiet": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "author": {
+      "type": ["string", "null"]
+    },
+    "publisher": {
+      "type": ["string", "null"]
+    },
+    "dateModified": {
+      "type": ["string", "null"]
+    },
+    "creditText": {
+      "type": ["string", "null"]
+    },
+    "url": {
+      "type": ["string", "null"]
+    },
+    "isBasedOn": {
+      "type": ["string", "null"]
+    },
+    "tool": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "supply": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "nutrition": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "video": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "prepTime": {
+      "type": ["string", "null"]
+    },
+    "cookTime": {
+      "type": ["string", "null"]
+    },
+    "totalTime": {
+      "type": ["string", "null"]
+    },
+    "comment": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["@type", "name", "text"],
+        "properties": {
+          "@type": {
+            "type": "string",
+            "const": "Comment"
+          },
+          "name": {
+            "type": ["string", "null"]
+          },
+          "text": {
+            "type": ["string", "null"]
+          }
+        }
+      }
+    },
+    "aggregateRating": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["@type", "ratingValue", "ratingCount"],
+          "properties": {
+            "@type": {
+              "type": "string",
+              "const": "AggregateRating"
+            },
+            "ratingValue": {
+              "type": ["string", "number", "integer", "null"]
+            },
+            "ratingCount": {
+              "type": ["string", "integer", "null"]
+            }
+          }
+        }
+      ]
+    },
+    "recipeimport:confidence": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1
+    },
+    "recipeimport:provenance": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    }
+  }
+}

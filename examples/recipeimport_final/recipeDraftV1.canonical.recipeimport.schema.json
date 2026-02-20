@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cookbook.dev/contracts/recipe_draft_staging.schema.v1.json",
+  "title": "Recipe Draft Staging V1",
+  "description": "Staging import payload. Extends Recipe Draft V1 with review metadata and unresolved text fields.",
+  "type": "object",
+  "required": ["schema_v", "recipe", "steps"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_v": {
+      "const": 1
+    },
+    "source": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "recipe": {
+      "type": "object",
+      "required": ["title"],
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": ["string", "null"]
+        },
+        "notes": {
+          "type": ["string", "null"]
+        },
+        "image_url": {
+          "type": ["string", "null"]
+        },
+        "confidence": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "cook_time_seconds": {
+          "type": ["number", "null"],
+          "minimum": 0
+        },
+        "variants": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "yield_units": {
+          "type": "number",
+          "minimum": 1,
+          "default": 1
+        },
+        "yield_phrase": {
+          "type": ["string", "null"]
+        },
+        "yield_unit_name": {
+          "type": ["string", "null"]
+        },
+        "yield_detail": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["instruction", "ingredient_lines"],
+        "additionalProperties": false,
+        "properties": {
+          "instruction": {
+            "type": "string",
+            "minLength": 1
+          },
+          "time_seconds": {
+            "type": ["number", "null"],
+            "minimum": 0
+          },
+          "temperature": {
+            "type": ["number", "null"]
+          },
+          "temperature_unit": {
+            "type": ["string", "null"],
+            "minLength": 1
+          },
+          "ingredient_lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["quantity_kind"],
+              "additionalProperties": false,
+              "properties": {
+                "ingredient_id": {
+                  "type": ["string", "null"],
+                  "minLength": 1
+                },
+                "linked_recipe_id": {
+                  "type": ["string", "null"],
+                  "minLength": 1
+                },
+                "quantity_kind": {
+                  "type": "string",
+                  "enum": ["exact", "approximate", "unquantified"]
+                },
+                "input_qty": {
+                  "type": ["number", "null"]
+                },
+                "input_unit_id": {
+                  "type": ["string", "null"],
+                  "minLength": 1
+                },
+                "note": {
+                  "type": ["string", "null"]
+                },
+                "preparation": {
+                  "type": ["string", "null"]
+                },
+                "raw_text": {
+                  "type": ["string", "null"]
+                },
+                "confidence": {
+                  "type": ["number", "null"],
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "raw_unit_text": {
+                  "type": ["string", "null"]
+                },
+                "raw_ingredient_text": {
+                  "type": ["string", "null"]
+                },
+                "is_optional": {
+                  "type": "boolean",
+                  "default": false
+                }
+              },
+              "allOf": [
+                {
+                  "oneOf": [
+                    {
+                      "required": ["ingredient_id"],
+                      "properties": {
+                        "ingredient_id": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    },
+                    {
+                      "required": ["linked_recipe_id"],
+                      "properties": {
+                        "linked_recipe_id": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "if": {
+                    "required": ["linked_recipe_id"],
+                    "properties": {
+                      "linked_recipe_id": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "input_qty": {
+                        "type": ["number", "null"],
+                        "exclusiveMinimum": 0,
+                        "maximum": 100
+                      },
+                      "input_unit_id": {
+                        "type": "null"
+                      }
+                    }
+                  },
+                  "else": {
+                    "if": {
+                      "properties": {
+                        "quantity_kind": {
+                          "const": "unquantified"
+                        }
+                      },
+                      "required": ["quantity_kind"]
+                    },
+                    "then": {
+                      "properties": {
+                        "input_qty": {
+                          "type": "null"
+                        },
+                        "input_unit_id": {
+                          "type": "null"
+                        }
+                      },
+                      "not": {
+                        "anyOf": [
+                          {
+                            "required": ["input_qty"],
+                            "properties": {
+                              "input_qty": {
+                                "type": "number"
+                              }
+                            }
+                          },
+                          {
+                            "required": ["input_unit_id"],
+                            "properties": {
+                              "input_unit_id": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    "else": {
+                      "required": ["input_qty"],
+                      "properties": {
+                        "input_qty": {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

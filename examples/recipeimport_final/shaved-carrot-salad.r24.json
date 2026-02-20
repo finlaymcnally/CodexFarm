@@ -1,0 +1,104 @@
+{
+  "recipe": {
+    "confidence": 0.95,
+    "cook_time_seconds": 2880,
+    "description": null,
+    "notes": null,
+    "title": "Shaved Carrot Salad with Ginger and Lime",
+    "yield_detail": null,
+    "yield_phrase": "6",
+    "yield_unit_name": null,
+    "yield_units": 1
+  },
+  "schema_v": 1,
+  "source": "saltfatacidheatCUTDOWN.epub",
+  "steps": [
+    {
+      "ingredient_lines": [
+        {
+          "confidence": 0.997,
+          "ingredient_id": "golden raisins",
+          "input_qty": 1.25,
+          "input_unit_id": null,
+          "is_optional": false,
+          "note": null,
+          "preparation": null,
+          "quantity_kind": "exact",
+          "raw_ingredient_text": "golden raisins",
+          "raw_text": "1 1\n/4\ncups golden or black raisins",
+          "raw_unit_text": "cups"
+        }
+      ],
+      "instruction": "1 to 2 large jalape\u00f1os, seeds and veins removed if desired, minced 2 cups coarsely chopped cilantro leaves and tender stems, plus a few sprigs for garnish Salt Lime Vinaigrette In a small bowl, submerge the raisins in boiling water. Let them sit for 15 minutes to rehydrate and plump up. Drain and set aside.",
+      "time_seconds": 900
+    },
+    {
+      "ingredient_lines": [
+        {
+          "confidence": 0.999,
+          "ingredient_id": "cumin seeds",
+          "input_qty": 1.0,
+          "input_unit_id": null,
+          "is_optional": false,
+          "note": null,
+          "preparation": null,
+          "quantity_kind": "exact",
+          "raw_ingredient_text": "cumin seeds",
+          "raw_text": "1 tablespoon cumin seeds",
+          "raw_unit_text": "tablespoon"
+        }
+      ],
+      "instruction": "Place the cumin seeds in a small, dry skillet and set over medium heat. Swirl the pan constantly to ensure even toasting. Toast until the first few seeds begin to pop and emit a savory aroma, about 3 minutes. Remove from the heat. Immediately dump the seeds into the bowl of a mortar or a spice grinder. Grind finely with a pinch of salt. Set aside.",
+      "time_seconds": 180
+    },
+    {
+      "ingredient_lines": [],
+      "instruction": "Trim and peel the carrots. Using either a Japanese mandoline or a sharp knife, thinly slice the carrots lengthwise. Use a sharp knife to cut the slices into matchsticks. If that seems too troublesome, you can use a vegetable peeler to make thin ribbons or just slice the carrots into thin coins."
+    },
+    {
+      "ingredient_lines": [
+        {
+          "confidence": 1.0,
+          "ingredient_id": "carrots",
+          "input_qty": 2.0,
+          "input_unit_id": null,
+          "is_optional": false,
+          "note": null,
+          "preparation": null,
+          "quantity_kind": "exact",
+          "raw_ingredient_text": "carrots",
+          "raw_text": "2 pounds carrots",
+          "raw_unit_text": "pounds"
+        },
+        {
+          "confidence": 0.999,
+          "ingredient_id": "ginger",
+          "input_qty": 4.0,
+          "input_unit_id": null,
+          "is_optional": false,
+          "note": null,
+          "preparation": "finely grated",
+          "quantity_kind": "exact",
+          "raw_ingredient_text": "ginger",
+          "raw_text": "4 teaspoons finely grated ginger",
+          "raw_unit_text": "teaspoons"
+        },
+        {
+          "confidence": 0.995,
+          "ingredient_id": "garlic",
+          "input_qty": 1.0,
+          "input_unit_id": null,
+          "is_optional": false,
+          "note": null,
+          "preparation": "finely grated or pounded with a pinch of salt",
+          "quantity_kind": "exact",
+          "raw_ingredient_text": "garlic",
+          "raw_text": "1 garlic clove, finely grated or pounded with a pinch of salt",
+          "raw_unit_text": "clove"
+        }
+      ],
+      "instruction": "Combine carrots, ginger, garlic, jalape\u00f1o, cilantro, cumin, and raisins in a large bowl. Season with three generous pinches of salt and dress with lime vinaigrette. Taste and adjust seasoning with salt and more lime juice as needed. Refrigerate the salad for 30 minutes to allow flavors to come together. To serve, toss to distribute seasonings, heap onto a large platter, and garnish with a few sprigs of cilantro.",
+      "time_seconds": 1800
+    }
+  ]
+}

@@ -1,0 +1,104 @@
+{
+  "@context": [
+    "https://schema.org",
+    {
+      "recipeimport": "https://recipeimport.local/ns#"
+    }
+  ],
+  "@id": "urn:recipeimport:example:platonic:c0",
+  "@type": "Recipe",
+  "identifier": "urn:recipeimport:example:platonic:c0",
+  "name": "Platonic Example Recipe",
+  "datePublished": "2026-01-15",
+  "description": "Deliberately complete example showing every currently-known intermediate field.",
+  "recipeYield": "4 servings",
+  "recipeIngredient": [
+    "2 cups all-purpose flour",
+    "1 cup water",
+    "1 tsp salt"
+  ],
+  "recipeInstructions": [
+    "Whisk flour, water, and salt until smooth.",
+    {
+      "@type": "HowToStep",
+      "text": "Bake until set and golden.",
+      "timeSeconds": 1500,
+      "temperature": 190,
+      "temperatureUnit": "C"
+    }
+  ],
+  "keywords": "demo, full-shape, recipeimport",
+  "image": [
+    "https://example.com/images/platonic-recipe.jpg"
+  ],
+  "recipeCategory": [
+    "Main course"
+  ],
+  "recipeCuisine": [
+    "American"
+  ],
+  "cookingMethod": [
+    "Bake"
+  ],
+  "suitableForDiet": [
+    "https://schema.org/VegetarianDiet"
+  ],
+  "author": "Recipe Import Team",
+  "publisher": "RecipeImport",
+  "dateModified": "2026-01-16",
+  "creditText": "Synthetic full-field coverage sample",
+  "url": "https://example.com/recipes/platonic-example",
+  "isBasedOn": "https://example.com/recipes/source",
+  "tool": [
+    "mixing bowl",
+    "whisk",
+    "baking dish"
+  ],
+  "supply": [
+    "parchment paper"
+  ],
+  "nutrition": {
+    "@type": "NutritionInformation",
+    "calories": "320 kcal",
+    "proteinContent": "9 g"
+  },
+  "video": {
+    "@type": "VideoObject",
+    "name": "Platonic Recipe Walkthrough",
+    "contentUrl": "https://example.com/video/platonic-recipe.mp4"
+  },
+  "prepTime": "PT20M",
+  "cookTime": "PT25M",
+  "totalTime": "PT45M",
+  "comment": [
+    {
+      "@type": "Comment",
+      "name": "test-cook",
+      "text": "Reliable baseline sample."
+    }
+  ],
+  "aggregateRating": {
+    "@type": "AggregateRating",
+    "ratingValue": "4.8",
+    "ratingCount": "124"
+  },
+  "recipeimport:confidence": 0.92,
+  "recipeimport:provenance": {
+    "@id": "urn:recipeimport:example:platonic:c0",
+    "confidence_score": 0.92,
+    "extraction_method": "heuristic_epub",
+    "generated_at": "2026-02-20T12:00:00",
+    "importer_version": "0.1.0",
+    "source_file": "platonic.epub",
+    "source_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+    "location": {
+      "chunk_index": 0,
+      "start_block": 10,
+      "end_block": 42,
+      "start_spine": 1,
+      "end_spine": 1,
+      "segmentation_score": 7.0
+    },
+    "processing_log": []
+  }
+}

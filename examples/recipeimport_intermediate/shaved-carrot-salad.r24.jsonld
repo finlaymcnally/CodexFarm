@@ -1,0 +1,45 @@
+{
+  "@context": [
+    "https://schema.org",
+    {
+      "recipeimport": "https://recipeimport.local/ns#"
+    }
+  ],
+  "@id": "urn:recipeimport:epub:789eb99e92fd73a31c559131124ac317fd039c440c1c759ed41d99d85af97f8c:c24",
+  "@type": "Recipe",
+  "identifier": "urn:recipeimport:epub:789eb99e92fd73a31c559131124ac317fd039c440c1c759ed41d99d85af97f8c:c24",
+  "name": "Shaved Carrot Salad with Ginger and Lime",
+  "recipeIngredient": [
+    "1 1\n/4\ncups golden or black raisins",
+    "1 tablespoon cumin seeds",
+    "2 pounds carrots",
+    "4 teaspoons finely grated ginger",
+    "1 garlic clove, finely grated or pounded with a pinch of salt"
+  ],
+  "recipeInstructions": [
+    "1 to 2 large jalape\u00f1os, seeds and veins removed if desired, minced 2 cups coarsely chopped cilantro leaves and tender stems, plus a few sprigs for garnish Salt Lime Vinaigrette In a small bowl, submerge the raisins in boiling water. Let them sit for 15 minutes to rehydrate and plump up. Drain and set aside.",
+    "Place the cumin seeds in a small, dry skillet and set over medium heat. Swirl the pan constantly to ensure even toasting. Toast until the first few seeds begin to pop and emit a savory aroma, about 3 minutes. Remove from the heat. Immediately dump the seeds into the bowl of a mortar or a spice grinder. Grind finely with a pinch of salt. Set aside.",
+    "Trim and peel the carrots. Using either a Japanese mandoline or a sharp knife, thinly slice the carrots lengthwise. Use a sharp knife to cut the slices into matchsticks. If that seems too troublesome, you can use a vegetable peeler to make thin ribbons or just slice the carrots into thin coins.",
+    "Combine carrots, ginger, garlic, jalape\u00f1o, cilantro, cumin, and raisins in a large bowl. Season with three generous pinches of salt and dress with lime vinaigrette. Taste and adjust seasoning with salt and more lime juice as needed. Refrigerate the salad for 30 minutes to allow flavors to come together. To serve, toss to distribute seasonings, heap onto a large platter, and garnish with a few sprigs of cilantro."
+  ],
+  "recipeYield": "6",
+  "recipeimport:confidence": 0.95,
+  "recipeimport:provenance": {
+    "@id": "urn:recipeimport:epub:789eb99e92fd73a31c559131124ac317fd039c440c1c759ed41d99d85af97f8c:c24",
+    "confidence_score": 0.95,
+    "extraction_method": "heuristic_epub",
+    "generated_at": "2026-02-16T00:04:22.881571",
+    "importer_version": "0.1.0",
+    "location": {
+      "chunk_index": 24,
+      "end_block": 1171,
+      "end_spine": 79,
+      "segmentation_score": 7.0,
+      "start_block": 1156,
+      "start_spine": 79
+    },
+    "processing_log": [],
+    "source_file": "saltfatacidheatCUTDOWN.epub",
+    "source_hash": "789eb99e92fd73a31c559131124ac317fd039c440c1c759ed41d99d85af97f8c"
+  }
+}

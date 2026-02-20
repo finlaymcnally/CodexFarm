@@ -1,0 +1,80 @@
+{
+  "schema_v": 1,
+  "source": "platonic.epub",
+  "recipe": {
+    "title": "Platonic Example Recipe",
+    "description": "Deliberately complete example showing every currently-known final field.",
+    "notes": "Includes both direct ingredient lines and a linked sub-recipe line.",
+    "image_url": "https://example.com/images/platonic-recipe.jpg",
+    "confidence": 0.92,
+    "cook_time_seconds": 1620,
+    "variants": [
+      "Add 1 tsp smoked paprika for a deeper flavor.",
+      "Swap half the flour for whole wheat flour."
+    ],
+    "yield_units": 4,
+    "yield_phrase": "4",
+    "yield_unit_name": "servings",
+    "yield_detail": "serves 4 as a main"
+  },
+  "steps": [
+    {
+      "instruction": "Whisk flour, water, and salt in a bowl until smooth.",
+      "time_seconds": 300,
+      "temperature": null,
+      "temperature_unit": null,
+      "ingredient_lines": [
+        {
+          "ingredient_id": "all-purpose flour",
+          "linked_recipe_id": null,
+          "quantity_kind": "exact",
+          "input_qty": 2,
+          "input_unit_id": null,
+          "note": "sifted",
+          "preparation": "sifted",
+          "raw_text": "2 cups all-purpose flour, sifted",
+          "confidence": 0.99,
+          "raw_unit_text": "cups",
+          "raw_ingredient_text": "all-purpose flour",
+          "is_optional": false
+        },
+        {
+          "ingredient_id": "water",
+          "linked_recipe_id": null,
+          "quantity_kind": "exact",
+          "input_qty": 1,
+          "input_unit_id": null,
+          "note": null,
+          "preparation": null,
+          "raw_text": "1 cup water",
+          "confidence": 0.99,
+          "raw_unit_text": "cup",
+          "raw_ingredient_text": "water",
+          "is_optional": false
+        }
+      ]
+    },
+    {
+      "instruction": "Fold in the linked sauce and bake until set.",
+      "time_seconds": 1320,
+      "temperature": 190,
+      "temperature_unit": "C",
+      "ingredient_lines": [
+        {
+          "ingredient_id": null,
+          "linked_recipe_id": "linked-sauce-r7",
+          "quantity_kind": "exact",
+          "input_qty": 0.5,
+          "input_unit_id": null,
+          "note": "from linked recipe",
+          "preparation": null,
+          "raw_text": "1/2 batch tomato sauce (see linked recipe)",
+          "confidence": 0.87,
+          "raw_unit_text": null,
+          "raw_ingredient_text": "tomato sauce",
+          "is_optional": true
+        }
+      ]
+    }
+  ]
+}
