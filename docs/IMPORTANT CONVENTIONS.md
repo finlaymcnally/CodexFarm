@@ -1,3 +1,9 @@
+---
+summary: "Project-level hidden rules and runtime conventions."
+read_when:
+  - "When changing pipeline behavior, schema contracts, or worker/runtime semantics"
+---
+
 # IMPORTANT CONVENTIONS
 
 - Pipeline behavior is data-driven. Add or edit pipeline JSON in `pipelines/` and keep referenced prompt/schema paths repo-relative.
@@ -8,4 +14,5 @@
 - Codex `--output-schema` currently requires `required` to include every key listed in `properties`; model optional recipe fields as nullable required fields.
 - A non-zero codex exit does not always mean unusable output. If `--output-last-message` writes a non-empty file, codex-farm keeps it and relies on local schema validation.
 - `recipe.schemaorg.normalize.v1` enforces one canonical instructions shape: `recipeInstructions` must be an array of `{"@type":"HowToStep","text":...}` objects.
+- `recipeimport_intermediate_fullshape_v1.schema.json` and `recipeimport_final_fullshape_v1.schema.json` are inbound validation contracts and must validate both sparse real samples and platonic full-shape samples under `examples/recipeimport_*`.
 - Always run tests in `.venv` with editable dev install: `source .venv/bin/activate && pip install -e '.[dev]' && pytest`.

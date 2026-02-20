@@ -1,4 +1,4 @@
 JSON Schemas live here. Codex uses these for constrained output, and codex-farm validates again locally.
 
-- `recipeimport_intermediate_fullshape_v1.schema.json`: full-field schema for recipeimport intermediate JSON-LD.
-- `recipeimport_final_fullshape_v1.schema.json`: full-field schema for recipeimport final draft JSON.
+- `recipeimport_intermediate_fullshape_v1.schema.json`: validation schema for recipeimport intermediate JSON-LD (supports both sparse real exports and full-shape examples).
+- `recipeimport_final_fullshape_v1.schema.json`: recipeimport final draft schema aligned with `examples/recipeimport_final/recipeDraftV1.canonical.recipeimport.schema.json`.

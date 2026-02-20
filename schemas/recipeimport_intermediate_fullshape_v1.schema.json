@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "RecipeImport Intermediate Recipe JSON-LD Full Shape v1",
+  "description": "Validation schema for recipeimport intermediate JSON-LD payloads.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -9,32 +10,8 @@
     "@type",
     "identifier",
     "name",
-    "datePublished",
-    "description",
-    "recipeYield",
     "recipeIngredient",
     "recipeInstructions",
-    "keywords",
-    "image",
-    "recipeCategory",
-    "recipeCuisine",
-    "cookingMethod",
-    "suitableForDiet",
-    "author",
-    "publisher",
-    "dateModified",
-    "creditText",
-    "url",
-    "isBasedOn",
-    "tool",
-    "supply",
-    "nutrition",
-    "video",
-    "prepTime",
-    "cookTime",
-    "totalTime",
-    "comment",
-    "aggregateRating",
     "recipeimport:confidence",
     "recipeimport:provenance"
   ],
@@ -104,13 +81,7 @@
           {
             "type": "object",
             "additionalProperties": false,
-            "required": [
-              "@type",
-              "text",
-              "timeSeconds",
-              "temperature",
-              "temperatureUnit"
-            ],
+            "required": ["@type", "text"],
             "properties": {
               "@type": {
                 "type": "string",
@@ -139,35 +110,35 @@
       "type": ["string", "null"]
     },
     "image": {
-      "type": "array",
+      "type": ["array", "null"],
       "items": {
         "type": "string",
         "minLength": 1
       }
     },
     "recipeCategory": {
-      "type": "array",
+      "type": ["array", "null"],
       "items": {
         "type": "string",
         "minLength": 1
       }
     },
     "recipeCuisine": {
-      "type": "array",
+      "type": ["array", "null"],
       "items": {
         "type": "string",
         "minLength": 1
       }
     },
     "cookingMethod": {
-      "type": "array",
+      "type": ["array", "null"],
       "items": {
         "type": "string",
         "minLength": 1
       }
     },
     "suitableForDiet": {
-      "type": "array",
+      "type": ["array", "null"],
       "items": {
         "type": "string",
         "minLength": 1
@@ -192,14 +163,14 @@
       "type": ["string", "null"]
     },
     "tool": {
-      "type": "array",
+      "type": ["array", "null"],
       "items": {
         "type": "string",
         "minLength": 1
       }
     },
     "supply": {
-      "type": "array",
+      "type": ["array", "null"],
       "items": {
         "type": "string",
         "minLength": 1
@@ -223,11 +194,11 @@
       "type": ["string", "null"]
     },
     "comment": {
-      "type": "array",
+      "type": ["array", "null"],
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["@type", "name", "text"],
+        "required": ["@type"],
         "properties": {
           "@type": {
             "type": "string",
@@ -250,7 +221,7 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["@type", "ratingValue", "ratingCount"],
+          "required": ["@type"],
           "properties": {
             "@type": {
               "type": "string",
