@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 from typer.testing import CliRunner
 
@@ -19,6 +20,10 @@ def test_pipelines_new_generates_files(tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 0, result.stdout
-    assert (tmp_path / "pipelines" / "demo.pipeline.v1.json").exists()
+    pipeline_path = tmp_path / "pipelines" / "demo.pipeline.v1.json"
+    assert pipeline_path.exists()
     assert (tmp_path / "prompts" / "demo_pipeline_v1.txt").exists()
     assert (tmp_path / "schemas" / "demo_pipeline_v1.schema.json").exists()
+
+    payload = json.loads(pipeline_path.read_text(encoding="utf-8"))
+    assert payload["codex_cd_mode"] == "asset_root"

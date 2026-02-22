@@ -16,7 +16,7 @@ from .db import (
     requeue_task,
 )
 from .paths import db_path_for_data_dir, resolve_farm_root
-from .pipeline_spec import load_pipelines, render_prompt_template
+from .pipeline_spec import PipelineSpec, load_pipelines, render_prompt_template
 from .schema_utils import SchemaValidationError, validate_json_file_against_schema
 
 
@@ -51,19 +51,40 @@ def _resolve_run_farm_root(
     return resolve_farm_root(worker_root)
 
 
-def _resolve_workspace_root(
+def _resolve_workspace_root_override(
     *,
     run_config: dict[str, object],
-    farm_root: Path,
-) -> Path:
+) -> Path | None:
     configured = _path_from_config(run_config.get("workspace_root"))
     if configured is None:
-        return farm_root
+        return None
     if not configured.exists() or not configured.is_dir():
         raise FileNotFoundError(
             f"workspace_root does not exist or is not a directory: {configured}"
         )
     return configured
+
+
+def _resolve_task_cd_dir(
+    *,
+    spec: PipelineSpec,
+    run: dict[str, object],
+    input_path: Path,
+    farm_root: Path,
+    workspace_root_override: Path | None,
+) -> Path:
+    if workspace_root_override is not None:
+        cd_dir = workspace_root_override
+    elif spec.codex_cd_mode == "asset_root":
+        cd_dir = farm_root
+    elif spec.codex_cd_mode == "input_dir":
+        cd_dir = Path(str(run["input_dir"])).expanduser().resolve()
+    else:
+        cd_dir = input_path.parent
+
+    if not cd_dir.exists() or not cd_dir.is_dir():
+        raise FileNotFoundError(f"Computed codex --cd directory does not exist: {cd_dir}")
+    return cd_dir
 
 
 def worker_loop(
@@ -115,10 +136,7 @@ def worker_loop(
             if run_farm_root not in pipeline_cache:
                 pipeline_cache[run_farm_root] = load_pipelines(run_farm_root / "pipelines")
             pipelines = pipeline_cache[run_farm_root]
-            workspace_root = _resolve_workspace_root(
-                run_config=run_config,
-                farm_root=run_farm_root,
-            )
+            workspace_root_override = _resolve_workspace_root_override(run_config=run_config)
         except (FileNotFoundError, ValueError) as exc:
             mark_task_error(
                 conn,
@@ -141,11 +159,27 @@ def worker_loop(
 
         input_path = Path(task["input_path"]).resolve()
         output_path = Path(run["output_dir"]).resolve() / task["rel_output_path"]
+        try:
+            cd_dir = _resolve_task_cd_dir(
+                spec=spec,
+                run=run,
+                input_path=input_path,
+                farm_root=run_farm_root,
+                workspace_root_override=workspace_root_override,
+            )
+        except FileNotFoundError as exc:
+            mark_task_error(
+                conn,
+                task_id=task["task_id"],
+                error=_trim_error(str(exc)),
+            )
+            exit_code = 1
+            continue
         prompt = render_prompt_template(spec.prompt_template_path, input_path)
 
         try:
             result = run_codex_exec(
-                cd_dir=workspace_root,
+                cd_dir=cd_dir,
                 prompt=prompt,
                 model=spec.codex_model,
                 sandbox=spec.codex_sandbox,

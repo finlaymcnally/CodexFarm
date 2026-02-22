@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+
+CodexCdMode = Literal["asset_root", "input_dir", "input_file_dir"]
 
 
 @dataclass(frozen=True)
@@ -21,6 +25,7 @@ class PipelineSpec:
     codex_ask_for_approval: str
     codex_web_search: str
     codex_timeout_seconds: int
+    codex_cd_mode: CodexCdMode
 
 
 class PipelineSpecModel(BaseModel):
@@ -39,6 +44,7 @@ class PipelineSpecModel(BaseModel):
     codex_ask_for_approval: str = "never"
     codex_web_search: str = "disabled"
     codex_timeout_seconds: int = Field(default=180, ge=1)
+    codex_cd_mode: CodexCdMode = "asset_root"
 
     @field_validator("output_ext")
     @classmethod
@@ -68,6 +74,7 @@ def _to_spec(*, model: PipelineSpecModel, repo_root: Path) -> PipelineSpec:
         codex_ask_for_approval=model.codex_ask_for_approval,
         codex_web_search=model.codex_web_search,
         codex_timeout_seconds=model.codex_timeout_seconds,
+        codex_cd_mode=model.codex_cd_mode,
     )
 
 

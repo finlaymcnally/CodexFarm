@@ -147,7 +147,7 @@ Scaffolds 3 files (fails if any exists):
 - `prompts/<id with dots -> underscores>.txt`
 - `schemas/<id with dots -> underscores>.schema.json`
 
-Generated defaults include model/sandbox/timeout and a permissive placeholder schema.
+Generated defaults include model/sandbox/timeout, `codex_cd_mode: "asset_root"`, and a permissive placeholder schema.
 
 ### `one --pipeline <id> --in <file> --out <file> [--root <pack>] [--workspace-root <dir>]`
 
@@ -155,9 +155,13 @@ Single-file processing path:
 
 1. resolve pipeline
 2. render prompt from template (`{{INPUT_PATH}}`)
-3. call Codex wrapper with `--cd` set to `workspace_root` (default: resolved `root`)
-4. local schema validate
-5. delete output and fail if invalid
+3. resolve `--cd`:
+   - if `--workspace-root` is set, use it
+   - else use pipeline `codex_cd_mode`
+   - for `one`, both `input_dir` and `input_file_dir` map to the input file parent
+4. call Codex wrapper with the resolved `--cd`
+5. local schema validate
+6. delete output and fail if invalid
 
 Exit:
 
@@ -166,7 +170,7 @@ Exit:
 
 ### `run create --pipeline <id> --in <dir> --out <dir> [--glob "**/*.json"] [--data-dir ./var] [--root <pack>] [--workspace-root <dir>] [--json]`
 
-Creates run + enqueues one task per matching file. Does not run workers. Persisted `config_json` includes absolute `farm_root` and `workspace_root`.
+Creates run + enqueues one task per matching file. Does not run workers. Persisted `config_json` always includes absolute `farm_root` and includes `workspace_root` only when explicitly provided.
 
 If no files match, raises parameter error.
 
@@ -193,7 +197,16 @@ Lists task rows for a run. JSON includes:
 
 ### `run errors --run-id <id> [--data-dir ./var] [--json]`
 
-Alias-style convenience for `run tasks --status error`.
+Returns only error tasks with fields:
+
+- `task_id`
+- `input_path`
+- `rel_output_path`
+- `attempts`
+- `error`
+- `leased_by`
+- `lease_until`
+- `updated_at`
 
 ### `worker [--data-dir ./var] [--worker-id ""] [--run-id <id>] [--lease-seconds 300] [--max-attempts 3] [--poll-seconds 1.0] [--once] [--root <pack>]`
 
@@ -233,6 +246,7 @@ End-to-end batch mode:
 `--json` contract:
 
 - stdout: one JSON object `{run_id, pipeline_id, status, counts, input_dir, output_dir, farm_root, workspace_root, worker_exit_codes, exit_code}`
+- `workspace_root` is `null` unless explicitly set via `--workspace-root`
 - stderr: progress lines
 
 ### `go [--data-dir ./var] [--root <pack>] [--workspace-root <dir>]`
@@ -268,6 +282,7 @@ Effective schema:
 - `codex_ask_for_approval: str` (default `"never"`)
 - `codex_web_search: str` (default `"disabled"`)
 - `codex_timeout_seconds: int` (default `180`, must be >=1)
+- `codex_cd_mode: Literal["asset_root", "input_dir", "input_file_dir"]` (default `"asset_root"`)
 
 Validation behavior:
 
@@ -309,10 +324,12 @@ Resolution algorithm:
 4. else search from module file path upward
 5. else raise `FileNotFoundError`
 
-Important consequence:
+Important consequences:
 
 - missing/renamed sentinel folder breaks most commands even if code exists.
-- worker resume behavior depends on persisted run config: `farm_root` and `workspace_root` are read from `runs.config_json` first.
+- worker resume behavior depends on persisted run config:
+  - `farm_root` is always read from `runs.config_json` first when present
+  - `workspace_root` overrides pipeline `codex_cd_mode` only when it exists in `runs.config_json`
 
 ## 8) SQLite schema and queue mechanics
 
@@ -440,8 +457,7 @@ When inferred status changes, it is persisted back to runs table.
 
 Worker pre-loads:
 
-- repo root
-- pipeline map from `pipelines/`
+- pipeline cache keyed by resolved `farm_root`
 - SQLite connection
 
 Loop body:
@@ -451,15 +467,26 @@ Loop body:
    - if `once=True`: return current exit code
    - else sleep `poll_seconds` and continue
 3. if `task.attempts > max_attempts`: mark task error immediately
-4. fetch run row, look up pipeline by `run.pipeline_id`
-5. build:
+4. fetch run row and parse `runs.config_json`
+5. resolve `farm_root`:
+   - use config `farm_root` when present
+   - else use worker `--root` (if provided)
+   - else fallback discovery
+6. load pipeline map from `<farm_root>/pipelines` (cached per root)
+7. resolve optional explicit `workspace_root` override from config
+8. look up pipeline by `run.pipeline_id`
+9. build:
    - `input_path = task.input_path`
    - `output_path = run.output_dir / task.rel_output_path`
-6. render prompt with template + input path
-7. run Codex wrapper
-8. if wrapper says failure -> raise runtime error
-9. local schema validate output
-10. mark task done with output path
+10. resolve Codex `--cd`:
+    - explicit `workspace_root` override when present
+    - otherwise pipeline `codex_cd_mode` (`asset_root`, `input_dir`, `input_file_dir`)
+11. if computed `--cd` does not exist, mark task `error` immediately (no retry)
+12. render prompt with template + input path
+13. run Codex wrapper
+14. if wrapper says failure -> raise runtime error
+15. local schema validate output
+16. mark task done with output path
 
 Error handling classes:
 
@@ -491,7 +518,7 @@ Generated command:
 1. `codex`
 2. `--ask-for-approval <value>` (global, before `exec`)
 3. `exec`
-4. `--cd <workspace_root>`
+4. `--cd <resolved cd_dir>`
 5. `--skip-git-repo-check`
 6. `--model <model>`
 7. `--sandbox <sandbox>`

@@ -30,13 +30,15 @@ External pipeline-pack workflow (pack can live outside this repo):
 codex-farm pipelines list --root /abs/path/to/pack --json
 codex-farm process \
   --root /abs/path/to/pack \
-  --workspace-root /abs/path/to/caller-project \
   --pipeline demo.echo.v1 \
   --in /abs/path/to/inputs \
   --out /abs/path/to/outputs \
   --json
 codex-farm run errors --run-id <run_id> --data-dir ./var --json
 ```
+
+`--workspace-root` is optional. If omitted, Codex `--cd` comes from pipeline
+`codex_cd_mode` (`asset_root`, `input_dir`, or `input_file_dir`).
 
 `go` is interactive inbox/outbox mode:
 

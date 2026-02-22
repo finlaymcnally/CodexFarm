@@ -366,3 +366,24 @@ def list_tasks_for_run(
 
     rows = conn.execute(query, tuple(params)).fetchall()
     return [dict(row) for row in rows]
+
+
+def list_error_tasks(conn: sqlite3.Connection, run_id: str) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT
+            task_id,
+            input_path,
+            rel_output_path,
+            attempts,
+            error,
+            leased_by,
+            lease_until,
+            updated_at
+        FROM tasks
+        WHERE run_id = ? AND status = 'error'
+        ORDER BY input_path ASC
+        """,
+        (run_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]

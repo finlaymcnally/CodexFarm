@@ -16,6 +16,7 @@ from .db import (
     create_run,
     enqueue_tasks_for_run,
     init_db,
+    list_error_tasks,
     list_tasks_for_run,
     open_db,
     run_status,
@@ -53,13 +54,11 @@ def _resolve_farm_root_or_die(root: Path | None) -> Path:
         raise typer.BadParameter(str(exc)) from exc
 
 
-def _resolve_workspace_root_or_die(
+def _resolve_workspace_root_override_or_die(
     workspace_root: Path | None,
-    *,
-    farm_root: Path,
-) -> Path:
+) -> Path | None:
     if workspace_root is None:
-        return farm_root
+        return None
 
     resolved = workspace_root.expanduser().resolve()
     if not resolved.exists() or not resolved.is_dir():
@@ -67,6 +66,30 @@ def _resolve_workspace_root_or_die(
             f"--workspace-root must point to an existing directory: {resolved}"
         )
     return resolved
+
+
+def _resolve_one_cd_dir(
+    *,
+    pipeline: PipelineSpec,
+    farm_root: Path,
+    input_path: Path,
+    workspace_root_override: Path | None,
+) -> Path:
+    if workspace_root_override is not None:
+        return workspace_root_override
+
+    if pipeline.codex_cd_mode == "asset_root":
+        cd_dir = farm_root
+    else:
+        # In one-file mode there is no run-wide input root; both input_dir and
+        # input_file_dir resolve to the parent of the input file.
+        cd_dir = input_path.resolve().parent
+
+    if not cd_dir.exists() or not cd_dir.is_dir():
+        raise typer.BadParameter(
+            f"Computed codex --cd directory does not exist: {cd_dir}"
+        )
+    return cd_dir
 
 
 def _load_pipeline_map(farm_root: Path) -> dict[str, PipelineSpec]:
@@ -287,6 +310,7 @@ def pipelines_new_command(
         "codex_ask_for_approval": "never",
         "codex_web_search": "disabled",
         "codex_timeout_seconds": 180,
+        "codex_cd_mode": "asset_root",
     }
 
     prompt_text = (
@@ -323,18 +347,28 @@ def one_command(
     in_path: Path = typer.Option(..., "--in", exists=True, file_okay=True, dir_okay=False),
     out_path: Path = typer.Option(..., "--out", file_okay=True, dir_okay=False),
     root: Path | None = typer.Option(None, "--root", help="Pipeline-pack root."),
-    workspace_root: Path | None = typer.Option(None, "--workspace-root", help="Directory passed to codex exec --cd."),
+    workspace_root: Path | None = typer.Option(
+        None,
+        "--workspace-root",
+        help="Explicit override for codex exec --cd.",
+    ),
 ) -> None:
     """Process one file through one pipeline."""
     farm_root = _resolve_farm_root_or_die(root)
-    workspace = _resolve_workspace_root_or_die(workspace_root, farm_root=farm_root)
+    workspace_override = _resolve_workspace_root_override_or_die(workspace_root)
     spec = _get_pipeline_or_die(pipeline, farm_root=farm_root)
+    cd_dir = _resolve_one_cd_dir(
+        pipeline=spec,
+        farm_root=farm_root,
+        input_path=in_path.resolve(),
+        workspace_root_override=workspace_override,
+    )
 
     prompt = render_prompt_template(spec.prompt_template_path, in_path.resolve())
 
     try:
         result = run_codex_exec(
-            cd_dir=workspace,
+            cd_dir=cd_dir,
             prompt=prompt,
             model=spec.codex_model,
             sandbox=spec.codex_sandbox,
@@ -373,12 +407,16 @@ def run_create_command(
     glob_pattern: str = typer.Option("**/*.json", "--glob", help="Input glob pattern."),
     data_dir: Path = typer.Option(Path("./var"), "--data-dir"),
     root: Path | None = typer.Option(None, "--root", help="Pipeline-pack root."),
-    workspace_root: Path | None = typer.Option(None, "--workspace-root", help="Directory passed to codex exec --cd."),
+    workspace_root: Path | None = typer.Option(
+        None,
+        "--workspace-root",
+        help="Explicit override for codex exec --cd.",
+    ),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Create a run and enqueue one task per matching input file."""
     farm_root = _resolve_farm_root_or_die(root)
-    workspace = _resolve_workspace_root_or_die(workspace_root, farm_root=farm_root)
+    workspace_override = _resolve_workspace_root_override_or_die(workspace_root)
     spec = _get_pipeline_or_die(pipeline, farm_root=farm_root)
     data_dir_resolved = resolve_data_dir(data_dir)
     _init_data_dir(data_dir_resolved)
@@ -391,8 +429,9 @@ def run_create_command(
         "out": str(output_dir_resolved),
         "glob": glob_pattern,
         "farm_root": str(farm_root),
-        "workspace_root": str(workspace),
     }
+    if workspace_override is not None:
+        config["workspace_root"] = str(workspace_override)
     run_id, task_count = _create_run_for_paths(
         pipeline=spec,
         input_dir=input_dir_resolved,
@@ -409,7 +448,7 @@ def run_create_command(
         "output_dir": str(output_dir_resolved),
         "total": task_count,
         "farm_root": str(farm_root),
-        "workspace_root": str(workspace),
+        "workspace_root": str(workspace_override) if workspace_override is not None else None,
     }
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
@@ -480,7 +519,7 @@ def run_errors_command(
 ) -> None:
     """List tasks with terminal error state for a run."""
     conn = open_db(db_path_for_data_dir(resolve_data_dir(data_dir)))
-    tasks = list_tasks_for_run(conn, run_id=run_id, status="error")
+    tasks = list_error_tasks(conn, run_id=run_id)
 
     if json_output:
         typer.echo(json.dumps(tasks, indent=2))
@@ -535,12 +574,16 @@ def process_command(
     lease_seconds: int = typer.Option(300, "--lease-seconds"),
     max_attempts: int = typer.Option(3, "--max-attempts"),
     root: Path | None = typer.Option(None, "--root", help="Pipeline-pack root."),
-    workspace_root: Path | None = typer.Option(None, "--workspace-root", help="Directory passed to codex exec --cd."),
+    workspace_root: Path | None = typer.Option(
+        None,
+        "--workspace-root",
+        help="Explicit override for codex exec --cd.",
+    ),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Create a run for a folder and process all tasks with N workers."""
     farm_root = _resolve_farm_root_or_die(root)
-    workspace = _resolve_workspace_root_or_die(workspace_root, farm_root=farm_root)
+    workspace_override = _resolve_workspace_root_override_or_die(workspace_root)
     spec = _get_pipeline_or_die(pipeline, farm_root=farm_root)
     selected_glob = glob_pattern or spec.input_glob_default
 
@@ -556,8 +599,9 @@ def process_command(
         "glob": selected_glob,
         "workers": workers,
         "farm_root": str(farm_root),
-        "workspace_root": str(workspace),
     }
+    if workspace_override is not None:
+        config["workspace_root"] = str(workspace_override)
 
     run_id, task_count = _create_run_for_paths(
         pipeline=spec,
@@ -586,7 +630,7 @@ def process_command(
             "input_dir": str(input_dir_resolved),
             "output_dir": str(output_dir_resolved),
             "farm_root": str(farm_root),
-            "workspace_root": str(workspace),
+            "workspace_root": str(workspace_override) if workspace_override is not None else None,
             "worker_exit_codes": worker_exit_codes,
             "exit_code": code,
         }
@@ -601,11 +645,15 @@ def process_command(
 def go_command(
     data_dir: Path = typer.Option(Path("./var"), "--data-dir"),
     root: Path | None = typer.Option(None, "--root", help="Pipeline-pack root."),
-    workspace_root: Path | None = typer.Option(None, "--workspace-root", help="Directory passed to codex exec --cd."),
+    workspace_root: Path | None = typer.Option(
+        None,
+        "--workspace-root",
+        help="Explicit override for codex exec --cd.",
+    ),
 ) -> None:
     """Interactive inbox/outbox mode."""
     farm_root = _resolve_farm_root_or_die(root)
-    workspace = _resolve_workspace_root_or_die(workspace_root, farm_root=farm_root)
+    workspace_override = _resolve_workspace_root_override_or_die(workspace_root)
     data_dir_resolved = resolve_data_dir(data_dir)
     _init_data_dir(data_dir_resolved)
 
@@ -650,8 +698,9 @@ def go_command(
         "workers": workers,
         "mode": "go",
         "farm_root": str(farm_root),
-        "workspace_root": str(workspace),
     }
+    if workspace_override is not None:
+        config["workspace_root"] = str(workspace_override)
 
     run_id, task_count = _create_run_for_paths(
         pipeline=selected,

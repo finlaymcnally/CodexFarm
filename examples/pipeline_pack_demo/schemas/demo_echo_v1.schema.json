@@ -5,10 +5,14 @@
   "additionalProperties": false,
   "required": [
     "ok",
+    "cd",
     "input_path"
   ],
   "properties": {
     "ok": {
+      "type": "string"
+    },
+    "cd": {
       "type": "string"
     },
     "input_path": {

@@ -1,2 +1,3 @@
-Read file at {{INPUT_PATH}} and return JSON matching schema exactly.
-Set "ok" to "OK" and "input_path" to the same absolute path string.
+INPUT={{INPUT_PATH}}
+Return JSON with keys: ok, cd, input_path.
+Set ok to "OK", cd to your current working directory, and input_path to INPUT.

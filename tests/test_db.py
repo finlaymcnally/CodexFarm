@@ -5,6 +5,7 @@ from codex_farm.db import (
     enqueue_tasks_for_run,
     init_db,
     lease_one_task,
+    list_error_tasks,
     list_tasks_for_run,
     mark_task_done,
     mark_task_error,
@@ -119,3 +120,10 @@ def test_list_tasks_for_run_filters_status(tmp_path: Path) -> None:
     assert done_tasks[0]["status"] == "done"
     assert error_tasks[0]["status"] == "error"
     assert error_tasks[0]["error"] == "boom"
+
+    error_rows = list_error_tasks(conn, run_id=run_id)
+    assert len(error_rows) == 1
+    assert error_rows[0]["input_path"] == str(file_b.resolve())
+    assert error_rows[0]["rel_output_path"] == second["rel_output_path"]
+    assert error_rows[0]["attempts"] == 1
+    assert error_rows[0]["error"] == "boom"

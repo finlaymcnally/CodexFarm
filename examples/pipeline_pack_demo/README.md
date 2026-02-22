@@ -1,3 +1,4 @@
-Tiny external pipeline pack demo for `--root` / `--workspace-root` smoke checks.
+Tiny external pipeline pack demo for `--root` and pipeline-driven `codex_cd_mode`.
 
-Use `--root examples/pipeline_pack_demo` to load `demo.echo.v1` from outside this repo.
+`demo.echo.v1` sets `"codex_cd_mode": "input_dir"` and uses `INPUT={{INPUT_PATH}}` in
+the prompt so fake-codex integration tests can assert prompt substitution and `--cd`.

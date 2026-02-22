@@ -21,6 +21,7 @@ Every pipeline JSON maps a stable `pipeline_id` to:
 - prompt template path (`prompts/*.txt`)
 - output schema path (`schemas/*.schema.json`)
 - Codex runtime flags (model, sandbox, approval mode, web search, timeout)
+- Codex working-directory mode (`codex_cd_mode`)
 - default input glob and output extension
 
 `src/codex_farm/pipeline_spec.py` validates these files with Pydantic (`extra="forbid"`), resolves prompt/schema paths against the selected asset root, and refuses invalid references early.
@@ -44,7 +45,18 @@ Resolution order:
 
 The selected root must contain the three sentinel folders directly. If one is missing, codex-farm fails with a clear message.
 
-Codex working directory is a separate setting: `--workspace-root` controls the `codex exec --cd` path. If omitted, it defaults to the resolved asset root.
+Codex working directory is selected in this order:
+
+1. explicit `--workspace-root` (when provided)
+2. pipeline `codex_cd_mode`
+
+Supported `codex_cd_mode` values:
+
+- `asset_root`: use resolved asset root (default)
+- `input_dir`: use run input directory (`process`/`run create`); for `one`, use the input file parent
+- `input_file_dir`: use each task input file parent
+
+If the selected `--cd` directory does not exist, codex-farm marks the task as an error with a clear configuration message.
 
 Data dir is always resolved to an absolute path. DB path is:
 
@@ -89,6 +101,7 @@ Single file processing path:
 1. load selected pipeline
 2. render prompt with `{{INPUT_PATH}}`
 3. call `run_codex_exec(...)` with `--workspace-root` (or asset root by default)
+   - if `--workspace-root` is omitted, `codex_cd_mode` picks the working directory
 4. validate output JSON against schema
 5. delete bad output and fail if validation fails
 
@@ -100,7 +113,7 @@ Run setup only (no workers):
 2. create one run row
 3. enqueue one task row per file
 
-`runs.config_json` persists `farm_root` and `workspace_root` so resumed workers keep the same roots.
+`runs.config_json` persists `farm_root` and optional explicit `workspace_root` so resumed workers keep the same root choices.
 
 Output path strategy mirrors input structure:
 
@@ -124,7 +137,7 @@ With `--json`, stdout is a single machine-readable JSON object; progress lines a
 These commands expose per-task status without querying SQLite directly.
 
 - `run tasks --run-id ... [--status ...] --json` returns task objects with `input_path`, `rel_output_path`, `status`, `attempts`, `error`, and `output_path`.
-- `run errors --run-id ... --json` returns only tasks in terminal `error` state.
+- `run errors --run-id ... --json` returns terminal error rows with `task_id`, `input_path`, `rel_output_path`, `attempts`, `error`, `leased_by`, `lease_until`, and `updated_at`.
 
 ### `go`
 
@@ -146,7 +159,7 @@ Stores run metadata:
 
 - `run_id`, `pipeline_id`, timestamps, status
 - input dir, glob pattern, output dir
-- serialized config JSON for reproducibility (`farm_root`, `workspace_root`, and run options)
+- serialized config JSON for reproducibility (`farm_root`, optional explicit `workspace_root`, and run options)
 
 ### `tasks` table
 
@@ -182,9 +195,10 @@ This transaction boundary is the concurrency guard that prevents duplicate claim
 2. load run + pipeline using persisted `farm_root` (or worker fallback root)
 3. derive absolute input/output paths
 4. render prompt
-5. call Codex wrapper using persisted `workspace_root` (or `farm_root` fallback)
-6. schema-validate output
-7. mark done, or requeue/error
+5. resolve Codex `--cd` from explicit `workspace_root` override or pipeline `codex_cd_mode`
+6. call Codex wrapper
+7. schema-validate output
+8. mark done, or requeue/error
 
 Retry behavior:
 
@@ -203,7 +217,7 @@ Any failed/invalid output file is deleted before retry/error marking.
 - `--config web_search=<pipeline setting>`
 - `--output-schema <schema>`
 - `--output-last-message <temp file>`
-- `--cd <workspace_root>`
+- `--cd <resolved cd_dir>`
 
 Important behavior:
 
@@ -248,7 +262,7 @@ Tests focus on orchestration logic without requiring live Codex calls:
 - `test_cli_scaffold.py`: pipeline scaffold command output files
 - `test_cli_integration_contracts.py`: `--root`, `--workspace-root`, JSON output contracts, and run task/error exports
 
-This keeps unit/smoke tests deterministic while still exercising core flow.
+Additional deterministic integration coverage lives in `test_fake_codex_pipeline_pack_demo.py`, which writes a fake `codex` executable to `PATH` and validates `--root`, prompt substitution, `codex_cd_mode`, and `run errors --json` behavior without real model calls.
 
 ## 10) Practical extension points
 

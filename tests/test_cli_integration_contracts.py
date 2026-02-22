@@ -40,6 +40,7 @@ def _write_pipeline_pack(root: Path, pipeline_id: str) -> None:
         "codex_ask_for_approval": "never",
         "codex_web_search": "disabled",
         "codex_timeout_seconds": 180,
+        "codex_cd_mode": "asset_root",
     }
     (root / "pipelines" / f"{pipeline_id}.json").write_text(
         json.dumps(pipeline_payload, indent=2) + "\n",
@@ -267,8 +268,10 @@ def test_run_errors_and_run_tasks_json(tmp_path: Path) -> None:
     assert errors_result.exit_code == 0, errors_result.stderr
     errors_payload = json.loads(errors_result.stdout)
     assert len(errors_payload) == 1
-    assert errors_payload[0]["status"] == "error"
     assert errors_payload[0]["error"] == "expected failure"
+    assert errors_payload[0]["input_path"] == str(file_b.resolve())
+    assert "task_id" in errors_payload[0]
+    assert "updated_at" in errors_payload[0]
 
     done_result = runner.invoke(
         app,
