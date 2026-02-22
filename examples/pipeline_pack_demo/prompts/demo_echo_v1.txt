@@ -1,0 +1,2 @@
+Read file at {{INPUT_PATH}} and return JSON matching schema exactly.
+Set "ok" to "OK" and "input_path" to the same absolute path string.

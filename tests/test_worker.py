@@ -36,9 +36,11 @@ def test_worker_loop_processes_task_with_mocked_codex(monkeypatch, tmp_path: Pat
     input_dir = tmp_path / "in"
     output_dir = tmp_path / "out"
     data_dir = tmp_path / "var"
+    workspace_root = tmp_path / "workspace"
     input_dir.mkdir(parents=True)
     output_dir.mkdir(parents=True)
     data_dir.mkdir(parents=True)
+    workspace_root.mkdir(parents=True)
 
     input_path = input_dir / "r1.json"
     input_path.write_text(json.dumps({"name": "Mock Chili"}), encoding="utf-8")
@@ -51,7 +53,10 @@ def test_worker_loop_processes_task_with_mocked_codex(monkeypatch, tmp_path: Pat
         input_dir=str(input_dir),
         glob="**/*.json",
         output_dir=str(output_dir),
-        config={},
+        config={
+            "farm_root": str(repo_root),
+            "workspace_root": str(workspace_root),
+        },
     )
     enqueue_tasks_for_run(
         conn,
@@ -62,7 +67,10 @@ def test_worker_loop_processes_task_with_mocked_codex(monkeypatch, tmp_path: Pat
         output_ext=spec.output_ext,
     )
 
+    captured_cd_dirs: list[str] = []
+
     def fake_run_codex_exec(**kwargs):
+        captured_cd_dirs.append(str(kwargs["cd_dir"]))
         out = kwargs["output_path"]
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(_fake_recipe("Mock Chili")), encoding="utf-8")
@@ -87,3 +95,4 @@ def test_worker_loop_processes_task_with_mocked_codex(monkeypatch, tmp_path: Pat
     status = run_status(conn, run_id=run_id)
     assert status["done"] == 1
     assert status["error"] == 0
+    assert captured_cd_dirs == [str(workspace_root.resolve())]

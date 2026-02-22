@@ -336,3 +336,33 @@ def run_status(conn: sqlite3.Connection, *, run_id: str) -> dict:
         "total": total,
         **counts,
     }
+
+
+def list_tasks_for_run(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    status: str | None = None,
+) -> list[dict]:
+    if status is not None and status not in TASK_STATUSES:
+        raise ValueError(f"Invalid task status filter: {status}")
+
+    query = """
+        SELECT
+            input_path,
+            rel_output_path,
+            status,
+            attempts,
+            error,
+            output_path
+        FROM tasks
+        WHERE run_id = ?
+    """
+    params: list[object] = [run_id]
+    if status is not None:
+        query += " AND status = ?"
+        params.append(status)
+    query += " ORDER BY input_path ASC"
+
+    rows = conn.execute(query, tuple(params)).fetchall()
+    return [dict(row) for row in rows]

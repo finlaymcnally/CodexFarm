@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from .db import (
     open_db,
     requeue_task,
 )
-from .paths import db_path_for_data_dir, find_repo_root
+from .paths import db_path_for_data_dir, resolve_farm_root
 from .pipeline_spec import load_pipelines, render_prompt_template
 from .schema_utils import SchemaValidationError, validate_json_file_against_schema
 
@@ -23,6 +24,46 @@ def _trim_error(text: str, limit: int = 1800) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 3] + "..."
+
+
+def _parse_run_config(raw: str) -> dict[str, object]:
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _path_from_config(value: object) -> Path | None:
+    if isinstance(value, str) and value.strip():
+        return Path(value).expanduser().resolve()
+    return None
+
+
+def _resolve_run_farm_root(
+    *,
+    run_config: dict[str, object],
+    worker_root: Path | None,
+) -> Path:
+    configured = _path_from_config(run_config.get("farm_root"))
+    if configured is not None:
+        return resolve_farm_root(configured)
+    return resolve_farm_root(worker_root)
+
+
+def _resolve_workspace_root(
+    *,
+    run_config: dict[str, object],
+    farm_root: Path,
+) -> Path:
+    configured = _path_from_config(run_config.get("workspace_root"))
+    if configured is None:
+        return farm_root
+    if not configured.exists() or not configured.is_dir():
+        raise FileNotFoundError(
+            f"workspace_root does not exist or is not a directory: {configured}"
+        )
+    return configured
 
 
 def worker_loop(
@@ -34,9 +75,9 @@ def worker_loop(
     max_attempts: int,
     poll_seconds: float,
     once: bool,
+    farm_root: Path | None = None,
 ) -> int:
-    repo_root = find_repo_root()
-    pipelines = load_pipelines(repo_root / "pipelines")
+    pipeline_cache: dict[Path, dict] = {}
 
     conn = open_db(db_path_for_data_dir(data_dir))
     exit_code = 0
@@ -65,6 +106,28 @@ def worker_loop(
             continue
 
         run = get_run(conn, task["run_id"])
+        run_config = _parse_run_config(run.get("config_json", "{}"))
+        try:
+            run_farm_root = _resolve_run_farm_root(
+                run_config=run_config,
+                worker_root=farm_root,
+            )
+            if run_farm_root not in pipeline_cache:
+                pipeline_cache[run_farm_root] = load_pipelines(run_farm_root / "pipelines")
+            pipelines = pipeline_cache[run_farm_root]
+            workspace_root = _resolve_workspace_root(
+                run_config=run_config,
+                farm_root=run_farm_root,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            mark_task_error(
+                conn,
+                task_id=task["task_id"],
+                error=_trim_error(str(exc)),
+            )
+            exit_code = 1
+            continue
+
         pipeline_id = run["pipeline_id"]
         spec = pipelines.get(pipeline_id)
         if spec is None:
@@ -82,7 +145,7 @@ def worker_loop(
 
         try:
             result = run_codex_exec(
-                workdir=repo_root,
+                cd_dir=workspace_root,
                 prompt=prompt,
                 model=spec.codex_model,
                 sandbox=spec.codex_sandbox,

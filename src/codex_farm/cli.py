@@ -6,7 +6,6 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import json
 from pathlib import Path
-import sys
 import time
 import uuid
 
@@ -17,11 +16,12 @@ from .db import (
     create_run,
     enqueue_tasks_for_run,
     init_db,
+    list_tasks_for_run,
     open_db,
     run_status,
 )
 from .doctor import run_doctor_checks
-from .paths import db_path_for_data_dir, find_repo_root, resolve_data_dir
+from .paths import db_path_for_data_dir, resolve_data_dir, resolve_farm_root
 from .pipeline_spec import (
     PipelineSpec,
     load_pipelines,
@@ -29,6 +29,9 @@ from .pipeline_spec import (
 )
 from .schema_utils import SchemaValidationError, validate_json_file_against_schema
 from .worker import worker_loop
+
+
+TASK_STATUS_VALUES = ("queued", "running", "done", "error")
 
 
 app = typer.Typer(help="Local worker farm for codex exec pipelines.", no_args_is_help=True)
@@ -43,13 +46,35 @@ def _timestamp_now() -> str:
     return datetime.now().strftime("%Y-%m-%d_%H.%M.%S")
 
 
-def _load_pipeline_map() -> dict[str, PipelineSpec]:
-    repo_root = find_repo_root()
-    return load_pipelines(repo_root / "pipelines")
+def _resolve_farm_root_or_die(root: Path | None) -> Path:
+    try:
+        return resolve_farm_root(root)
+    except FileNotFoundError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
 
-def _get_pipeline_or_die(pipeline_id: str) -> PipelineSpec:
-    pipelines = _load_pipeline_map()
+def _resolve_workspace_root_or_die(
+    workspace_root: Path | None,
+    *,
+    farm_root: Path,
+) -> Path:
+    if workspace_root is None:
+        return farm_root
+
+    resolved = workspace_root.expanduser().resolve()
+    if not resolved.exists() or not resolved.is_dir():
+        raise typer.BadParameter(
+            f"--workspace-root must point to an existing directory: {resolved}"
+        )
+    return resolved
+
+
+def _load_pipeline_map(farm_root: Path) -> dict[str, PipelineSpec]:
+    return load_pipelines(farm_root / "pipelines")
+
+
+def _get_pipeline_or_die(pipeline_id: str, *, farm_root: Path) -> PipelineSpec:
+    pipelines = _load_pipeline_map(farm_root)
     spec = pipelines.get(pipeline_id)
     if spec is None:
         known = ", ".join(sorted(pipelines))
@@ -115,7 +140,9 @@ def _run_workers(
     lease_seconds: int,
     max_attempts: int,
     poll_seconds: float,
-) -> tuple[int, dict]:
+    farm_root: Path,
+    json_output: bool,
+) -> tuple[int, dict, list[int]]:
     status_conn = open_db(db_path_for_data_dir(data_dir))
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -129,6 +156,7 @@ def _run_workers(
                 max_attempts=max_attempts,
                 poll_seconds=poll_seconds,
                 once=True,
+                farm_root=farm_root,
             )
             for idx in range(workers)
         ]
@@ -137,15 +165,35 @@ def _run_workers(
             status = run_status(status_conn, run_id=run_id)
             typer.echo(
                 f"run={run_id} queued={status['queued']} running={status['running']} "
-                f"done={status['done']} error={status['error']}"
+                f"done={status['done']} error={status['error']}",
+                err=json_output,
             )
-            time.sleep(1.0)
+            time.sleep(poll_seconds)
 
         exit_codes = [future.result() for future in futures]
 
     final_status = run_status(status_conn, run_id=run_id)
     combined_exit = 1 if any(code != 0 for code in exit_codes) or final_status["error"] > 0 else 0
-    return combined_exit, final_status
+    return combined_exit, final_status, exit_codes
+
+
+def _counts_payload(status: dict) -> dict[str, int]:
+    return {
+        "queued": int(status["queued"]),
+        "running": int(status["running"]),
+        "done": int(status["done"]),
+        "error": int(status["error"]),
+        "total": int(status["total"]),
+    }
+
+
+def _status_payload(status: dict) -> dict:
+    return {
+        "run_id": status["run_id"],
+        "pipeline_id": status["pipeline_id"],
+        "status": status["status"],
+        "counts": _counts_payload(status),
+    }
 
 
 def _print_summary(status: dict) -> None:
@@ -189,10 +237,12 @@ def init_command(
 
 @pipelines_app.command("list")
 def pipelines_list_command(
+    root: Path | None = typer.Option(None, "--root", help="Pipeline-pack root."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON output."),
 ) -> None:
     """List pipeline IDs and descriptions."""
-    pipelines = _load_pipeline_map()
+    farm_root = _resolve_farm_root_or_die(root)
+    pipelines = _load_pipeline_map(farm_root)
     entries = [
         {"pipeline_id": spec.pipeline_id, "description": spec.description}
         for spec in sorted(pipelines.values(), key=lambda item: item.pipeline_id)
@@ -209,16 +259,17 @@ def pipelines_list_command(
 @pipelines_app.command("new")
 def pipelines_new_command(
     pipeline_id: str = typer.Option(..., "--pipeline-id", help="New pipeline ID."),
+    root: Path | None = typer.Option(None, "--root", help="Pipeline-pack root."),
 ) -> None:
     """Scaffold a new pipeline config, prompt, and placeholder schema."""
-    repo_root = find_repo_root()
+    farm_root = _resolve_farm_root_or_die(root)
     slug = pipeline_id.replace(".", "_")
 
-    pipeline_path = repo_root / "pipelines" / f"{pipeline_id}.json"
+    pipeline_path = farm_root / "pipelines" / f"{pipeline_id}.json"
     prompt_rel = Path("prompts") / f"{slug}.txt"
-    prompt_path = repo_root / prompt_rel
+    prompt_path = farm_root / prompt_rel
     schema_rel = Path("schemas") / f"{slug}.schema.json"
-    schema_path = repo_root / schema_rel
+    schema_path = farm_root / schema_rel
 
     for path in (pipeline_path, prompt_path, schema_path):
         if path.exists():
@@ -271,16 +322,19 @@ def one_command(
     pipeline: str = typer.Option(..., "--pipeline", help="Pipeline ID."),
     in_path: Path = typer.Option(..., "--in", exists=True, file_okay=True, dir_okay=False),
     out_path: Path = typer.Option(..., "--out", file_okay=True, dir_okay=False),
+    root: Path | None = typer.Option(None, "--root", help="Pipeline-pack root."),
+    workspace_root: Path | None = typer.Option(None, "--workspace-root", help="Directory passed to codex exec --cd."),
 ) -> None:
     """Process one file through one pipeline."""
-    spec = _get_pipeline_or_die(pipeline)
-    repo_root = find_repo_root()
+    farm_root = _resolve_farm_root_or_die(root)
+    workspace = _resolve_workspace_root_or_die(workspace_root, farm_root=farm_root)
+    spec = _get_pipeline_or_die(pipeline, farm_root=farm_root)
 
     prompt = render_prompt_template(spec.prompt_template_path, in_path.resolve())
 
     try:
         result = run_codex_exec(
-            workdir=repo_root,
+            cd_dir=workspace,
             prompt=prompt,
             model=spec.codex_model,
             sandbox=spec.codex_sandbox,
@@ -318,29 +372,45 @@ def run_create_command(
     out_dir: Path = typer.Option(..., "--out", file_okay=False, dir_okay=True),
     glob_pattern: str = typer.Option("**/*.json", "--glob", help="Input glob pattern."),
     data_dir: Path = typer.Option(Path("./var"), "--data-dir"),
+    root: Path | None = typer.Option(None, "--root", help="Pipeline-pack root."),
+    workspace_root: Path | None = typer.Option(None, "--workspace-root", help="Directory passed to codex exec --cd."),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Create a run and enqueue one task per matching input file."""
-    spec = _get_pipeline_or_die(pipeline)
+    farm_root = _resolve_farm_root_or_die(root)
+    workspace = _resolve_workspace_root_or_die(workspace_root, farm_root=farm_root)
+    spec = _get_pipeline_or_die(pipeline, farm_root=farm_root)
     data_dir_resolved = resolve_data_dir(data_dir)
     _init_data_dir(data_dir_resolved)
 
+    input_dir_resolved = in_dir.resolve()
+    output_dir_resolved = out_dir.resolve()
     config = {
         "pipeline": pipeline,
-        "in": str(in_dir.resolve()),
-        "out": str(out_dir.resolve()),
+        "in": str(input_dir_resolved),
+        "out": str(output_dir_resolved),
         "glob": glob_pattern,
+        "farm_root": str(farm_root),
+        "workspace_root": str(workspace),
     }
     run_id, task_count = _create_run_for_paths(
         pipeline=spec,
-        input_dir=in_dir.resolve(),
-        output_dir=out_dir.resolve(),
+        input_dir=input_dir_resolved,
+        output_dir=output_dir_resolved,
         glob_pattern=glob_pattern,
         data_dir=data_dir_resolved,
         config=config,
     )
 
-    payload = {"run_id": run_id, "task_count": task_count}
+    payload = {
+        "run_id": run_id,
+        "pipeline_id": spec.pipeline_id,
+        "input_dir": str(input_dir_resolved),
+        "output_dir": str(output_dir_resolved),
+        "total": task_count,
+        "farm_root": str(farm_root),
+        "workspace_root": str(workspace),
+    }
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
     else:
@@ -358,9 +428,70 @@ def run_status_command(
     status = run_status(conn, run_id=run_id)
 
     if json_output:
-        typer.echo(json.dumps(status, indent=2))
+        typer.echo(json.dumps(_status_payload(status), indent=2))
     else:
         _print_summary(status)
+
+
+@run_app.command("tasks")
+def run_tasks_command(
+    run_id: str = typer.Option(..., "--run-id"),
+    status: str | None = typer.Option(None, "--status"),
+    data_dir: Path = typer.Option(Path("./var"), "--data-dir"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """List tasks for a run, optionally filtered by status."""
+    if status is not None and status not in TASK_STATUS_VALUES:
+        choices = ", ".join(TASK_STATUS_VALUES)
+        raise typer.BadParameter(f"--status must be one of: {choices}")
+
+    conn = open_db(db_path_for_data_dir(resolve_data_dir(data_dir)))
+    tasks = list_tasks_for_run(conn, run_id=run_id, status=status)
+
+    if json_output:
+        typer.echo(json.dumps(tasks, indent=2))
+        return
+
+    if not tasks:
+        typer.echo("No tasks found.")
+        return
+
+    for task in tasks:
+        typer.echo(
+            " ".join(
+                [
+                    f"status={task['status']}",
+                    f"attempts={task['attempts']}",
+                    f"input={task['input_path']}",
+                    f"rel_output={task['rel_output_path']}",
+                    f"output={task['output_path'] or '-'}",
+                ]
+            )
+        )
+        if task["error"]:
+            typer.echo(f"  error={task['error']}")
+
+
+@run_app.command("errors")
+def run_errors_command(
+    run_id: str = typer.Option(..., "--run-id"),
+    data_dir: Path = typer.Option(Path("./var"), "--data-dir"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """List tasks with terminal error state for a run."""
+    conn = open_db(db_path_for_data_dir(resolve_data_dir(data_dir)))
+    tasks = list_tasks_for_run(conn, run_id=run_id, status="error")
+
+    if json_output:
+        typer.echo(json.dumps(tasks, indent=2))
+        return
+
+    if not tasks:
+        typer.echo("No error tasks.")
+        return
+
+    for task in tasks:
+        typer.echo(f"{task['input_path']}: {task['error'] or '(no message)'}")
 
 
 @app.command("worker")
@@ -372,8 +503,10 @@ def worker_command(
     max_attempts: int = typer.Option(3, "--max-attempts"),
     poll_seconds: float = typer.Option(1.0, "--poll-seconds"),
     once: bool = typer.Option(False, "--once"),
+    root: Path | None = typer.Option(None, "--root", help="Pipeline-pack root."),
 ) -> None:
     """Run a worker loop."""
+    farm_root = _resolve_farm_root_or_die(root) if root is not None else None
     data_dir_resolved = resolve_data_dir(data_dir)
     _init_data_dir(data_dir_resolved)
 
@@ -386,6 +519,7 @@ def worker_command(
         max_attempts=max_attempts,
         poll_seconds=poll_seconds,
         once=once,
+        farm_root=farm_root,
     )
     raise typer.Exit(code=code)
 
@@ -400,44 +534,63 @@ def process_command(
     glob_pattern: str = typer.Option("", "--glob", help="Input glob override."),
     lease_seconds: int = typer.Option(300, "--lease-seconds"),
     max_attempts: int = typer.Option(3, "--max-attempts"),
+    root: Path | None = typer.Option(None, "--root", help="Pipeline-pack root."),
+    workspace_root: Path | None = typer.Option(None, "--workspace-root", help="Directory passed to codex exec --cd."),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Create a run for a folder and process all tasks with N workers."""
-    spec = _get_pipeline_or_die(pipeline)
+    farm_root = _resolve_farm_root_or_die(root)
+    workspace = _resolve_workspace_root_or_die(workspace_root, farm_root=farm_root)
+    spec = _get_pipeline_or_die(pipeline, farm_root=farm_root)
     selected_glob = glob_pattern or spec.input_glob_default
 
     data_dir_resolved = resolve_data_dir(data_dir)
     _init_data_dir(data_dir_resolved)
 
+    input_dir_resolved = in_dir.resolve()
+    output_dir_resolved = out_dir.resolve()
     config = {
         "pipeline": pipeline,
-        "in": str(in_dir.resolve()),
-        "out": str(out_dir.resolve()),
+        "in": str(input_dir_resolved),
+        "out": str(output_dir_resolved),
         "glob": selected_glob,
         "workers": workers,
+        "farm_root": str(farm_root),
+        "workspace_root": str(workspace),
     }
 
     run_id, task_count = _create_run_for_paths(
         pipeline=spec,
-        input_dir=in_dir.resolve(),
-        output_dir=out_dir.resolve(),
+        input_dir=input_dir_resolved,
+        output_dir=output_dir_resolved,
         glob_pattern=selected_glob,
         data_dir=data_dir_resolved,
         config=config,
     )
 
-    typer.echo(f"Created run {run_id} with {task_count} tasks")
-    code, status = _run_workers(
+    typer.echo(f"Created run {run_id} with {task_count} tasks", err=json_output)
+    code, status, worker_exit_codes = _run_workers(
         run_id=run_id,
         data_dir=data_dir_resolved,
         workers=workers,
         lease_seconds=lease_seconds,
         max_attempts=max_attempts,
         poll_seconds=1.0,
+        farm_root=farm_root,
+        json_output=json_output,
     )
 
     if json_output:
-        typer.echo(json.dumps(status, indent=2))
+        payload = {
+            **_status_payload(status),
+            "input_dir": str(input_dir_resolved),
+            "output_dir": str(output_dir_resolved),
+            "farm_root": str(farm_root),
+            "workspace_root": str(workspace),
+            "worker_exit_codes": worker_exit_codes,
+            "exit_code": code,
+        }
+        typer.echo(json.dumps(payload, indent=2))
     else:
         _print_summary(status)
 
@@ -447,12 +600,16 @@ def process_command(
 @app.command("go")
 def go_command(
     data_dir: Path = typer.Option(Path("./var"), "--data-dir"),
+    root: Path | None = typer.Option(None, "--root", help="Pipeline-pack root."),
+    workspace_root: Path | None = typer.Option(None, "--workspace-root", help="Directory passed to codex exec --cd."),
 ) -> None:
     """Interactive inbox/outbox mode."""
+    farm_root = _resolve_farm_root_or_die(root)
+    workspace = _resolve_workspace_root_or_die(workspace_root, farm_root=farm_root)
     data_dir_resolved = resolve_data_dir(data_dir)
     _init_data_dir(data_dir_resolved)
 
-    pipelines = sorted(_load_pipeline_map().values(), key=lambda item: item.pipeline_id)
+    pipelines = sorted(_load_pipeline_map(farm_root).values(), key=lambda item: item.pipeline_id)
     if not pipelines:
         typer.echo("No pipelines found.")
         raise typer.Exit(1)
@@ -492,6 +649,8 @@ def go_command(
         "glob": selected.input_glob_default,
         "workers": workers,
         "mode": "go",
+        "farm_root": str(farm_root),
+        "workspace_root": str(workspace),
     }
 
     run_id, task_count = _create_run_for_paths(
@@ -504,13 +663,15 @@ def go_command(
     )
 
     typer.echo(f"Created run {run_id} with {task_count} tasks")
-    code, status = _run_workers(
+    code, status, _worker_exit_codes = _run_workers(
         run_id=run_id,
         data_dir=data_dir_resolved,
         workers=workers,
         lease_seconds=300,
         max_attempts=3,
         poll_seconds=1.0,
+        farm_root=farm_root,
+        json_output=False,
     )
     _print_summary(status)
 

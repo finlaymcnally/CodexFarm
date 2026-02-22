@@ -29,7 +29,7 @@ def _stderr_tail(stderr: str, max_lines: int = 20) -> str:
 
 def run_codex_exec(
     *,
-    workdir: Path,
+    cd_dir: Path,
     prompt: str,
     model: str,
     sandbox: str,
@@ -58,7 +58,7 @@ def run_codex_exec(
         ask_for_approval,
         "exec",
         "--cd",
-        str(workdir.resolve()),
+        str(cd_dir.resolve()),
         "--skip-git-repo-check",
         "--model",
         model,

@@ -23,7 +23,7 @@ Every pipeline JSON maps a stable `pipeline_id` to:
 - Codex runtime flags (model, sandbox, approval mode, web search, timeout)
 - default input glob and output extension
 
-`src/codex_farm/pipeline_spec.py` validates these files with Pydantic (`extra="forbid"`), resolves prompt/schema paths against repo root, and refuses invalid references early.
+`src/codex_farm/pipeline_spec.py` validates these files with Pydantic (`extra="forbid"`), resolves prompt/schema paths against the selected asset root, and refuses invalid references early.
 
 At runtime, prompt rendering is simple string substitution:
 
@@ -31,15 +31,20 @@ At runtime, prompt rendering is simple string substitution:
 
 So each task gets the same template plus a different input path.
 
-## 2) Repo root and data dir resolution
+## 2) Asset root and data dir resolution
 
-`src/codex_farm/paths.py` finds the repo root by locating folders `pipelines/`, `prompts/`, and `schemas/`.
+`src/codex_farm/paths.py` resolves the asset root by locating folders `pipelines/`, `prompts/`, and `schemas/`.
 
 Resolution order:
 
-1. `CODEX_FARM_ROOT` env var (if valid)
-2. current working directory (and parents)
-3. module file location (and parents)
+1. `--root` CLI option (if provided)
+2. `CODEX_FARM_ROOT` env var
+3. current working directory (and parents)
+4. module file location (and parents)
+
+The selected root must contain the three sentinel folders directly. If one is missing, codex-farm fails with a clear message.
+
+Codex working directory is a separate setting: `--workspace-root` controls the `codex exec --cd` path. If omitted, it defaults to the resolved asset root.
 
 Data dir is always resolved to an absolute path. DB path is:
 
@@ -51,7 +56,7 @@ Main command groups:
 
 - top-level: `doctor`, `init`, `one`, `worker`, `process`, `go`
 - subcommands: `pipelines list`, `pipelines new`
-- run lifecycle: `run create`, `run status`
+- run lifecycle: `run create`, `run status`, `run tasks`, `run errors`
 
 ### `doctor`
 
@@ -83,7 +88,7 @@ Single file processing path:
 
 1. load selected pipeline
 2. render prompt with `{{INPUT_PATH}}`
-3. call `run_codex_exec(...)`
+3. call `run_codex_exec(...)` with `--workspace-root` (or asset root by default)
 4. validate output JSON against schema
 5. delete bad output and fail if validation fails
 
@@ -94,6 +99,8 @@ Run setup only (no workers):
 1. enumerate input files by glob
 2. create one run row
 3. enqueue one task row per file
+
+`runs.config_json` persists `farm_root` and `workspace_root` so resumed workers keep the same roots.
 
 Output path strategy mirrors input structure:
 
@@ -109,6 +116,15 @@ Batch execution path:
 3. each thread runs `worker_loop(..., once=True)` until queue empty
 4. poll and print run status every second
 5. exit non-zero if any worker failed or final run has errors
+
+With `--json`, stdout is a single machine-readable JSON object; progress lines are sent to stderr.
+
+### `run tasks` and `run errors`
+
+These commands expose per-task status without querying SQLite directly.
+
+- `run tasks --run-id ... [--status ...] --json` returns task objects with `input_path`, `rel_output_path`, `status`, `attempts`, `error`, and `output_path`.
+- `run errors --run-id ... --json` returns only tasks in terminal `error` state.
 
 ### `go`
 
@@ -130,7 +146,7 @@ Stores run metadata:
 
 - `run_id`, `pipeline_id`, timestamps, status
 - input dir, glob pattern, output dir
-- serialized config JSON for reproducibility
+- serialized config JSON for reproducibility (`farm_root`, `workspace_root`, and run options)
 
 ### `tasks` table
 
@@ -163,10 +179,10 @@ This transaction boundary is the concurrency guard that prevents duplicate claim
 `src/codex_farm/worker.py` loops:
 
 1. lease task
-2. load run + pipeline
+2. load run + pipeline using persisted `farm_root` (or worker fallback root)
 3. derive absolute input/output paths
 4. render prompt
-5. call Codex wrapper
+5. call Codex wrapper using persisted `workspace_root` (or `farm_root` fallback)
 6. schema-validate output
 7. mark done, or requeue/error
 
@@ -187,6 +203,7 @@ Any failed/invalid output file is deleted before retry/error marking.
 - `--config web_search=<pipeline setting>`
 - `--output-schema <schema>`
 - `--output-last-message <temp file>`
+- `--cd <workspace_root>`
 
 Important behavior:
 
@@ -229,6 +246,7 @@ Tests focus on orchestration logic without requiring live Codex calls:
 - `test_process_smoke.py`: multi-worker process flow with mocked Codex
 - `test_recipeimport_schemas.py`: validates real example payloads against recipeimport schemas
 - `test_cli_scaffold.py`: pipeline scaffold command output files
+- `test_cli_integration_contracts.py`: `--root`, `--workspace-root`, JSON output contracts, and run task/error exports
 
 This keeps unit/smoke tests deterministic while still exercising core flow.
 
@@ -241,4 +259,3 @@ To add a new operation, you usually only need:
 3. schema in `schemas/`
 
 Because queue/worker/CLI execution is pipeline-driven, no new orchestration code is required for most transforms.
-

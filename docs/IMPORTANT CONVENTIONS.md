@@ -7,8 +7,12 @@ read_when:
 # IMPORTANT CONVENTIONS
 
 - Pipeline behavior is data-driven. Add or edit pipeline JSON in `pipelines/` and keep referenced prompt/schema paths repo-relative.
+- Asset-root resolution precedence is `--root` flag, then `CODEX_FARM_ROOT`, then upward auto-discovery; the chosen root must contain `pipelines/`, `prompts/`, and `schemas/`.
+- Run metadata in `runs.config_json` stores absolute `farm_root` and `workspace_root`; workers prefer those persisted paths so resumed runs keep the same pipeline pack and Codex `--cd` behavior.
+- `process --json` is a machine contract: stdout must be JSON only. Progress lines go to stderr.
 - `process` worker slots are in-process threads (`ThreadPoolExecutor`) and each worker opens its own SQLite connection; lease logic in `db.py` is the concurrency guard.
 - Task outputs are written atomically via temp file + rename in `codex_exec.py`; never mark tasks done on partial writes.
+- `run tasks --json` and `run errors --json` are the supported way to inspect per-task failures programmatically without reading SQLite directly.
 - Codex CLI compatibility rule: pass approval policy as a global flag (`codex --ask-for-approval ... exec ...`), not as `codex exec --ask-for-approval ...`.
 - Always include `--skip-git-repo-check` in codex worker/doctor calls; this repo may run in directories without `.git/`.
 - Codex `--output-schema` currently requires `required` to include every key listed in `properties`; model optional recipe fields as nullable required fields.

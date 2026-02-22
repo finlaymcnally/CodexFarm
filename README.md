@@ -24,6 +24,20 @@ codex-farm process \
   --data-dir ./var
 ```
 
+External pipeline-pack workflow (pack can live outside this repo):
+
+```bash
+codex-farm pipelines list --root /abs/path/to/pack --json
+codex-farm process \
+  --root /abs/path/to/pack \
+  --workspace-root /abs/path/to/caller-project \
+  --pipeline demo.echo.v1 \
+  --in /abs/path/to/inputs \
+  --out /abs/path/to/outputs \
+  --json
+codex-farm run errors --run-id <run_id> --data-dir ./var --json
+```
+
 `go` is interactive inbox/outbox mode:
 
 ```bash
@@ -38,3 +52,4 @@ codex-farm go --data-dir ./var
 - `prompts/`: prompt templates used by workers.
 - `schemas/`: JSON Schemas enforced by Codex and validated locally.
 - `examples/`: tiny sample inputs and expected structural examples.
+- `examples/pipeline_pack_demo/`: minimal external pipeline-pack for `--root` smoke tests.
