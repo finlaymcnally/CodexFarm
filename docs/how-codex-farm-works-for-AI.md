@@ -70,6 +70,8 @@ Main implementation modules:
   SQLite schema, leasing, task/run state updates.
 - `src/codex_farm/codex_exec.py`
   Subprocess wrapper for `codex exec`.
+- `src/codex_farm/analytics_dashboard.py`
+  Telemetry CSV collector + static dashboard artifact renderer.
 - `src/codex_farm/worker.py`
   Worker loop with retry/error handling.
 - `src/codex_farm/schema_utils.py`
@@ -90,6 +92,8 @@ Persistent runtime data:
 - database: `<data_dir>/codex_farm.sqlite3`
 - interactive input: `<data_dir>/inbox/`
 - interactive output: `<data_dir>/outbox/<pipeline_id>/<timestamp>/`
+- codex telemetry CSV: `<data_dir>/codex_exec_activity.csv`
+- dashboard output default: `<data_dir>/analytics-dashboard/`
 
 ## 4) CLI contract: commands, parameters, defaults, exit behavior
 
@@ -129,6 +133,35 @@ Creates directories and initializes DB schema:
 Exit:
 
 - 0 on success
+
+### `stats-dashboard [--data-dir ./var] [--csv <path>] [--out-dir <path>] [--recent-limit 250]`
+
+Builds a static analytics dashboard from telemetry CSV.
+
+Path resolution:
+
+- source CSV:
+  - `--csv` when provided
+  - else `<data_dir>/codex_exec_activity.csv`
+- output dir:
+  - `--out-dir` when provided
+  - else `<data_dir>/analytics-dashboard`
+
+Artifacts:
+
+- `<out_dir>/index.html`
+- `<out_dir>/assets/dashboard_data.json`
+- `<out_dir>/assets/dashboard.js`
+- `<out_dir>/assets/style.css`
+
+Loading behavior:
+
+- `index.html` includes inline JSON payload.
+- JS reads inline payload first, then falls back to `fetch("assets/dashboard_data.json")`.
+
+Failure behavior:
+
+- missing CSV is non-fatal; command writes an empty dashboard with warning lines.
 
 ### `pipelines list [--root <pack>] [--json]`
 
@@ -525,7 +558,8 @@ Generated command:
 8. `--config web_search=<value>`
 9. `--output-schema <absolute schema path>`
 10. `--output-last-message <temp output file>`
-11. `<prompt text>`
+11. `--json` (emit Codex events as JSONL)
+12. `<prompt text>`
 
 I/O strategy:
 
@@ -538,6 +572,15 @@ Result decision:
 - if return code !=0 and no payload file: failure
 - if payload file missing/empty even with return code 0: failure
 - otherwise success (including non-zero exit with non-empty payload)
+
+Telemetry side effect:
+
+- each call appends one CSV row (`codex_exec_activity.csv`) with:
+  - prompt text + hash
+  - token usage from `turn.completed.usage` when present
+  - process timing, exit status, payload size
+  - caller context (`source`, pipeline/run/task/worker/input when provided by caller)
+- `stats-dashboard` is the canonical static renderer for this CSV surface.
 
 Success write:
 

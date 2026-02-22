@@ -10,6 +10,7 @@ read_when:
 - Pipelines may set `codex_cd_mode` (`asset_root`, `input_dir`, `input_file_dir`) to choose Codex `--cd` without code changes.
 - Asset-root resolution precedence is `--root` flag, then `CODEX_FARM_ROOT`, then upward auto-discovery; the chosen root must contain `pipelines/`, `prompts/`, and `schemas/`.
 - Run metadata in `runs.config_json` stores absolute `farm_root` and optional explicit `workspace_root`; workers prefer those persisted paths so resumed runs keep the same pipeline pack and Codex `--cd` behavior.
+- `runs.status` is a derived summary, not independent truth: `db.run_status` infers it from task counts and writes back the inferred value.
 - `--workspace-root` is an explicit override; when absent, workers resolve Codex `--cd` from pipeline `codex_cd_mode`.
 - `process --json` is a machine contract: stdout must be JSON only. Progress lines go to stderr.
 - `process` worker slots are in-process threads (`ThreadPoolExecutor`) and each worker opens its own SQLite connection; lease logic in `db.py` is the concurrency guard.
@@ -17,6 +18,8 @@ read_when:
 - `run tasks --json` and `run errors --json` are the supported way to inspect per-task failures programmatically without reading SQLite directly.
 - Codex CLI compatibility rule: pass approval policy as a global flag (`codex --ask-for-approval ... exec ...`), not as `codex exec --ask-for-approval ...`.
 - Always include `--skip-git-repo-check` in codex worker/doctor calls; this repo may run in directories without `.git/`.
+- Codex subprocess calls always include `--json`; per-call usage telemetry is appended to CSV (`<data_dir>/codex_exec_activity.csv` for worker/process/go, `./var/codex_exec_activity.csv` for `one`) with prompt text, token counts, duration, exit status, and run/task metadata when available.
+- `stats-dashboard` reads telemetry CSV and writes a static dashboard bundle to `<data_dir>/analytics-dashboard` by default; renderer must keep inline JSON in `index.html` with fetch fallback so local `file://` viewing still works.
 - Codex `--output-schema` currently requires `required` to include every key listed in `properties`; model optional recipe fields as nullable required fields.
 - A non-zero codex exit does not always mean unusable output. If `--output-last-message` writes a non-empty file, codex-farm keeps it and relies on local schema validation.
 - `recipe.schemaorg.normalize.v1` enforces one canonical instructions shape: `recipeInstructions` must be an array of `{"@type":"HowToStep","text":...}` objects.

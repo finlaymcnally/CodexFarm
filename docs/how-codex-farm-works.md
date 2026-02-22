@@ -66,7 +66,7 @@ Data dir is always resolved to an absolute path. DB path is:
 
 Main command groups:
 
-- top-level: `doctor`, `init`, `one`, `worker`, `process`, `go`
+- top-level: `doctor`, `init`, `one`, `stats-dashboard`, `worker`, `process`, `go`
 - subcommands: `pipelines list`, `pipelines new`
 - run lifecycle: `run create`, `run status`, `run tasks`, `run errors`
 
@@ -104,6 +104,24 @@ Single file processing path:
    - if `--workspace-root` is omitted, `codex_cd_mode` picks the working directory
 4. validate output JSON against schema
 5. delete bad output and fail if validation fails
+
+### `stats-dashboard`
+
+Builds a static dashboard from telemetry CSV.
+
+Defaults:
+
+- input CSV: `<data_dir>/codex_exec_activity.csv`
+- output dir: `<data_dir>/analytics-dashboard`
+
+Artifacts written:
+
+- `index.html`
+- `assets/dashboard_data.json`
+- `assets/dashboard.js`
+- `assets/style.css`
+
+The HTML embeds inline JSON first, then JS falls back to loading `assets/dashboard_data.json`.
 
 ### `run create`
 
@@ -217,6 +235,7 @@ Any failed/invalid output file is deleted before retry/error marking.
 - `--config web_search=<pipeline setting>`
 - `--output-schema <schema>`
 - `--output-last-message <temp file>`
+- `--json` (Codex JSONL events)
 - `--cd <resolved cd_dir>`
 
 Important behavior:
@@ -226,6 +245,7 @@ Important behavior:
 - timeout raises `CodexExecTimeoutError`
 - non-zero exit is accepted if temp output exists and is non-empty
 - final accept/reject still depends on local schema validation
+- each Codex call appends a CSV telemetry row (`codex_exec_activity.csv`) including prompt text, token usage, runtime, and run/task context when available
 
 This is why codex-farm remains resilient to non-fatal Codex exit noise while still enforcing strict output contracts.
 
@@ -261,6 +281,7 @@ Tests focus on orchestration logic without requiring live Codex calls:
 - `test_recipeimport_schemas.py`: validates real example payloads against recipeimport schemas
 - `test_cli_scaffold.py`: pipeline scaffold command output files
 - `test_cli_integration_contracts.py`: `--root`, `--workspace-root`, JSON output contracts, and run task/error exports
+- `test_stats_dashboard.py`: static dashboard artifact generation and summary metric aggregation from CSV rows
 
 Additional deterministic integration coverage lives in `test_fake_codex_pipeline_pack_demo.py`, which writes a fake `codex` executable to `PATH` and validates `--root`, prompt substitution, `codex_cd_mode`, and `run errors --json` behavior without real model calls.
 

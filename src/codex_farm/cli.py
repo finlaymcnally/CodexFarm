@@ -11,6 +11,7 @@ import uuid
 
 import typer
 
+from .analytics_dashboard import build_stats_dashboard
 from .codex_exec import CodexExecTimeoutError, run_codex_exec
 from .db import (
     create_run,
@@ -258,6 +259,52 @@ def init_command(
     typer.echo(f"Initialized data dir: {resolved}")
 
 
+@app.command("stats-dashboard")
+def stats_dashboard_command(
+    data_dir: Path = typer.Option(Path("./var"), "--data-dir", help="Local run metadata directory."),
+    csv_path: Path | None = typer.Option(
+        None,
+        "--csv",
+        help="Telemetry CSV path override (defaults to <data_dir>/codex_exec_activity.csv).",
+    ),
+    out_dir: Path | None = typer.Option(
+        None,
+        "--out-dir",
+        help="Dashboard output directory (defaults to <data_dir>/analytics-dashboard).",
+    ),
+    recent_limit: int = typer.Option(
+        250,
+        "--recent-limit",
+        min=10,
+        max=5000,
+        help="Maximum number of recent events included in dashboard payload.",
+    ),
+) -> None:
+    """Build a static dashboard from codex exec telemetry CSV."""
+    resolved_data_dir = resolve_data_dir(data_dir)
+    resolved_csv = (
+        csv_path.expanduser().resolve()
+        if csv_path is not None
+        else (resolved_data_dir / "codex_exec_activity.csv")
+    )
+    resolved_out_dir = (
+        out_dir.expanduser().resolve()
+        if out_dir is not None
+        else (resolved_data_dir / "analytics-dashboard")
+    )
+
+    result = build_stats_dashboard(
+        csv_path=resolved_csv,
+        out_dir=resolved_out_dir,
+        recent_limit=recent_limit,
+    )
+
+    typer.echo(f"Wrote dashboard: {result.index_path}")
+    typer.echo(f"Rows analyzed: {result.row_count}")
+    for warning in result.warnings:
+        typer.echo(f"warning: {warning}")
+
+
 @pipelines_app.command("list")
 def pipelines_list_command(
     root: Path | None = typer.Option(None, "--root", help="Pipeline-pack root."),
@@ -356,6 +403,7 @@ def one_command(
     """Process one file through one pipeline."""
     farm_root = _resolve_farm_root_or_die(root)
     workspace_override = _resolve_workspace_root_override_or_die(workspace_root)
+    usage_log_csv = resolve_data_dir(Path("./var")) / "codex_exec_activity.csv"
     spec = _get_pipeline_or_die(pipeline, farm_root=farm_root)
     cd_dir = _resolve_one_cd_dir(
         pipeline=spec,
@@ -364,7 +412,13 @@ def one_command(
         workspace_root_override=workspace_override,
     )
 
-    prompt = render_prompt_template(spec.prompt_template_path, in_path.resolve())
+    input_path = in_path.resolve()
+    prompt = render_prompt_template(spec.prompt_template_path, input_path)
+    usage_context = {
+        "source": "one",
+        "pipeline_id": spec.pipeline_id,
+        "input_path": str(input_path),
+    }
 
     try:
         result = run_codex_exec(
@@ -377,6 +431,8 @@ def one_command(
             output_schema=spec.output_schema_path,
             output_path=out_path.resolve(),
             timeout_seconds=spec.codex_timeout_seconds,
+            usage_log_csv=usage_log_csv,
+            usage_context=usage_context,
         )
     except CodexExecTimeoutError as exc:
         typer.echo(str(exc))

@@ -101,6 +101,7 @@ def worker_loop(
     pipeline_cache: dict[Path, dict] = {}
 
     conn = open_db(db_path_for_data_dir(data_dir))
+    usage_log_csv = data_dir.resolve() / "codex_exec_activity.csv"
     exit_code = 0
 
     while True:
@@ -178,6 +179,14 @@ def worker_loop(
         prompt = render_prompt_template(spec.prompt_template_path, input_path)
 
         try:
+            usage_context = {
+                "source": "worker",
+                "pipeline_id": pipeline_id,
+                "run_id": task["run_id"],
+                "task_id": task["task_id"],
+                "worker_id": worker_id,
+                "input_path": str(input_path),
+            }
             result = run_codex_exec(
                 cd_dir=cd_dir,
                 prompt=prompt,
@@ -188,6 +197,8 @@ def worker_loop(
                 output_schema=spec.output_schema_path,
                 output_path=output_path,
                 timeout_seconds=spec.codex_timeout_seconds,
+                usage_log_csv=usage_log_csv,
+                usage_context=usage_context,
             )
             if not result.ok:
                 stderr = result.stderr_tail or "no stderr"

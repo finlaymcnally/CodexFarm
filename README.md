@@ -48,6 +48,12 @@ cp examples/schemaorg_recipes_in/*.json ./var/inbox/
 codex-farm go --data-dir ./var
 ```
 
+Telemetry dashboard snapshot:
+
+```bash
+codex-farm stats-dashboard --data-dir ./var
+```
+
 ## Folder notes
 
 - `pipelines/`: pipeline config JSON files.
