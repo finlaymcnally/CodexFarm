@@ -69,3 +69,16 @@ Output files:
 - CSV writes are append-only and header-safe (header is written only when file is empty).
 - Logging is best-effort; telemetry write failures do not fail task execution.
 - Dashboard generation is read-only against telemetry input files.
+
+## Merged discoveries from `docs/understandings`
+
+- `2026-02-22_14.47.53`: `codex_exec_activity.csv` already carries enough context for static analytics without DB joins (status, durations, tokens, source, pipeline, run/task metadata).
+- `2026-02-22_14.47.53`: Dashboard output should stay read-only over telemetry input and keep inline JSON plus fetch fallback so `file://` loads still work.
+- `2026-02-22_14.47.53`: Primary paths to preserve are CLI `codex-farm stats-dashboard` and implementation in `src/codex_farm/analytics_dashboard.py`.
+- `2026-02-22_19.40.00`: All real Codex subprocess execution paths converge at `src/codex_farm/codex_exec.py::run_codex_exec`, so token telemetry should stay centralized there.
+- `2026-02-22_19.40.00`: Worker-based modes (`process`, `go`, `worker`) call Codex through `worker_loop`; `one` is the only non-worker caller and still uses `run_codex_exec`.
+- `2026-02-22_19.40.00`: Per-call token usage comes from Codex JSONL `turn.completed.usage` and should be persisted once per invocation row.
+
+Known trap:
+
+- Duplicating telemetry writes outside `run_codex_exec` creates double-counting and inconsistent context coverage across command paths.

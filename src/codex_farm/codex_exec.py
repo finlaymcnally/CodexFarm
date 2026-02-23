@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import threading
@@ -30,6 +31,23 @@ class CodexExecResult:
 
 class CodexExecTimeoutError(TimeoutError):
     """Raised when codex exec exceeds timeout."""
+
+
+class CodexExecRateLimitError(RuntimeError):
+    """Raised when codex exec reports API rate limiting (HTTP 429)."""
+
+
+_RATE_LIMIT_PATTERN = re.compile(
+    r"\b429\b|too many requests|rate[ -]?limit(?:ed|ing)?",
+    re.IGNORECASE,
+)
+
+
+def is_rate_limit_message(text: str) -> bool:
+    """Return True when stderr/stdout text indicates rate limiting."""
+    if not text:
+        return False
+    return _RATE_LIMIT_PATTERN.search(text) is not None
 
 
 _USAGE_LOG_FIELDS = (

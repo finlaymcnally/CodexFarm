@@ -211,3 +211,20 @@ This prevents resumed tasks from silently switching pipeline packs or cd behavio
   - update CLI one-file resolver and worker resolver together
   - update tests in `tests/test_worker.py`
   - update chunk docs 02 and 04 so they stay aligned
+
+## Merged discoveries from `docs/understandings`
+
+These points were originally captured as separate timestamped exploration notes and are now merged here:
+
+- `2026-02-22_12.33.22`: Run creation must persist `farm_root` and `workspace_root` decisions in `runs.config_json` so resumed workers do not depend on caller cwd/env.
+- `2026-02-22_12.33.22`: Worker root fallback order is persisted `farm_root` first, then worker `--root`, then normal auto-resolution; workspace fallback is persisted `workspace_root` first, then farm root behavior.
+- `2026-02-22_13.30.00`: `--workspace-root` is an explicit override only. It should not be silently backfilled when omitted.
+- `2026-02-22_13.30.00`: Worker `--cd` resolution order is strict: persisted workspace override, else `codex_cd_mode` (`asset_root` -> run farm root, `input_dir` -> run input dir, `input_file_dir` -> task input parent).
+- `2026-02-22_13.30.00`: Missing computed `--cd` directory is terminal configuration error, not retryable runtime noise.
+- `2026-02-22_14.34.00`: Root validation must require sentinel directories (`pipelines/`, `prompts/`, `schemas/`) and use precedence `--root` > `CODEX_FARM_ROOT` > auto-discovery.
+- `2026-02-22_14.34.00`: Pipeline JSON validation (`PipelineSpecModel`, `extra=forbid`) plus repo-relative asset existence checks are the critical guard before tasks are queued.
+
+Known bad paths to avoid repeating:
+
+- Allowing implicit workspace defaults made resume behavior drift across shells and caused hard-to-reproduce `--cd` bugs.
+- Letting workers recompute roots from ambient cwd instead of persisted run config caused external pipeline-pack runs to pick the wrong assets.

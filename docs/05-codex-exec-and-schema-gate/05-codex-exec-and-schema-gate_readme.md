@@ -45,6 +45,7 @@ Input to this chunk:
 Output from this chunk:
 
 - `CodexExecResult` (`ok`, `exit_code`, `stderr_tail`) or timeout exception.
+- `is_rate_limit_message(...)` helper for classifying stderr/stdout tails that indicate API rate limiting (`429`/rate-limit text).
 - Parsed JSON payload on schema success.
 - `SchemaValidationError` on JSON/schema failure.
 
@@ -184,3 +185,20 @@ Common regressions to watch for:
 - `docs/04-worker-execution-and-retries/04-worker-execution-and-retries_readme.md`
 - `docs/06-integration-contracts-and-fixtures/06-integration-contracts-and-fixtures_readme.md`
 - `docs/IMPORTANT CONVENTIONS.md`
+
+## Merged discoveries from `docs/understandings`
+
+Historical discoveries that now belong in this chunk:
+
+- `2026-02-20_13.05.00`: Codex CLI in this environment requires approval policy as a global flag (`codex --ask-for-approval never exec ...`), not `codex exec --ask-for-approval ...`.
+- `2026-02-20_13.05.00`: `--skip-git-repo-check` is mandatory for non-git execution contexts and must remain in runtime and doctor command shapes.
+- `2026-02-20_13.05.00`: Codex can return non-zero while still producing valid `--output-last-message`; local schema validation is the final acceptance authority.
+- `2026-02-20_13.05.00`: Current `--output-schema` behavior is stricter than generic JSON Schema expectations and effectively requires every `properties` key in `required`; optional fields should be modeled as nullable required keys when needed.
+- `2026-02-20_13.09.19`: Recipeimport schema contracts were realigned to accept both sparse real payloads and platonic full-shape fixtures; the old over-required fullshape contract caused false failures.
+- `2026-02-20_13.09.19`: `schemas/recipeimport_final_fullshape_v1.schema.json` now tracks canonical shape from `examples/recipeimport_final/recipeDraftV1.canonical.recipeimport.schema.json`.
+- `2026-02-22_14.33.40`: Chunk 05 is an acceptance boundary: temp-file write + atomic promote + schema gate is intentional and should not be bypassed by subprocess exit code shortcuts.
+
+Known fragile areas:
+
+- Treating Codex exit code alone as truth breaks valid-output acceptance in real environments with noisy local shutdown/telemetry errors.
+- Over-tightening recipeimport fullshape requirements has already rejected production-like sparse payloads.

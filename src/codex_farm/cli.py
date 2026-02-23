@@ -6,13 +6,14 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import json
 from pathlib import Path
+import threading
 import time
 import uuid
 
 import typer
 
 from .analytics_dashboard import build_stats_dashboard
-from .codex_exec import CodexExecTimeoutError, run_codex_exec
+from .codex_exec import CodexExecTimeoutError, is_rate_limit_message, run_codex_exec
 from .db import (
     create_run,
     enqueue_tasks_for_run,
@@ -168,6 +169,17 @@ def _run_workers(
     json_output: bool,
 ) -> tuple[int, dict, list[int]]:
     status_conn = open_db(db_path_for_data_dir(data_dir))
+    stop_event = threading.Event()
+    warning_lock = threading.Lock()
+    warning_emitted = False
+
+    def emit_warning(message: str) -> None:
+        nonlocal warning_emitted
+        with warning_lock:
+            if warning_emitted:
+                return
+            warning_emitted = True
+        typer.echo(message, err=True)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [
@@ -181,6 +193,8 @@ def _run_workers(
                 poll_seconds=poll_seconds,
                 once=True,
                 farm_root=farm_root,
+                stop_event=stop_event,
+                warning_callback=emit_warning,
             )
             for idx in range(workers)
         ]
@@ -439,6 +453,11 @@ def one_command(
         raise typer.Exit(1)
 
     if not result.ok:
+        if is_rate_limit_message(result.stderr_tail):
+            typer.echo(
+                "warning: codex returned HTTP 429 rate limit; stopping without retry.",
+                err=True,
+            )
         typer.echo(f"codex exec failed (exit={result.exit_code}): {result.stderr_tail}")
         raise typer.Exit(1)
 
@@ -615,6 +634,7 @@ def worker_command(
         poll_seconds=poll_seconds,
         once=once,
         farm_root=farm_root,
+        warning_callback=lambda message: typer.echo(message, err=True),
     )
     raise typer.Exit(code=code)
 

@@ -106,3 +106,15 @@ pytest tests/test_cli_integration_contracts.py tests/test_fake_codex_pipeline_pa
 - `docs/04-worker-execution-and-retries/04-worker-execution-and-retries_readme.md`
 - `docs/05-codex-exec-and-schema-gate/05-codex-exec-and-schema-gate_readme.md`
 - `docs/how-codex-farm-works.md` (integration test strategy overview)
+
+## Merged discoveries from `docs/understandings`
+
+- `2026-02-22_13.22.52`: The docs and code boundaries were intentionally split into six seams (CLI, root/assets, queue state, worker retries, codex/schema gate, integration) to match the real call path and localize edits.
+- `2026-02-22_13.22.52`: Most changes should touch one chunk plus one neighbor seam; broad cross-chunk changes are a smell that contracts are being mixed.
+- `2026-02-22_14.34.17`: Integration strategy intentionally keeps monkeypatched `run_codex_exec` tests for fast contract/orchestration checks.
+- `2026-02-22_14.34.17`: Integration strategy intentionally also keeps fake-`codex` binary tests for subprocess seam checks (`--cd`, prompt substitution, output handoff).
+- `2026-02-22_14.34.17`: Using only one fixture style leaves blind spots (monkeypatch misses subprocess wiring regressions; fake-binary-only suites are slower and less surgical for JSON contract checks).
+
+Known anti-pattern:
+
+- Replacing dual fixture strategy with a single "simpler" approach has repeatedly reduced coverage on important seams.

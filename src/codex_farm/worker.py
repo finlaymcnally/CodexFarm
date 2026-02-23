@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
+import threading
 import time
 from pathlib import Path
 
-from .codex_exec import CodexExecTimeoutError, run_codex_exec
+from .codex_exec import (
+    CodexExecRateLimitError,
+    CodexExecTimeoutError,
+    is_rate_limit_message,
+    run_codex_exec,
+)
 from .db import (
     get_run,
     lease_one_task,
@@ -97,6 +104,8 @@ def worker_loop(
     poll_seconds: float,
     once: bool,
     farm_root: Path | None = None,
+    stop_event: threading.Event | None = None,
+    warning_callback: Callable[[str], None] | None = None,
 ) -> int:
     pipeline_cache: dict[Path, dict] = {}
 
@@ -105,6 +114,9 @@ def worker_loop(
     exit_code = 0
 
     while True:
+        if stop_event is not None and stop_event.is_set():
+            return exit_code
+
         task = lease_one_task(
             conn,
             worker_id=worker_id,
@@ -117,6 +129,14 @@ def worker_loop(
                 return exit_code
             time.sleep(poll_seconds)
             continue
+
+        if stop_event is not None and stop_event.is_set():
+            requeue_task(
+                conn,
+                task_id=task["task_id"],
+                error="Halting queued task after HTTP 429 rate-limit warning from another worker.",
+            )
+            return exit_code
 
         if task["attempts"] > max_attempts:
             mark_task_error(
@@ -202,6 +222,14 @@ def worker_loop(
             )
             if not result.ok:
                 stderr = result.stderr_tail or "no stderr"
+                if is_rate_limit_message(stderr):
+                    raise CodexExecRateLimitError(
+                        (
+                            "WARNING: codex rate limit (HTTP 429) detected; "
+                            "stopping to avoid additional requests. "
+                            f"codex exit={result.exit_code}; details: {stderr}"
+                        )
+                    )
                 raise RuntimeError(
                     f"codex exec failed (exit={result.exit_code}): {stderr}"
                 )
@@ -211,6 +239,17 @@ def worker_loop(
                 schema_path=spec.output_schema_path,
             )
             mark_task_done(conn, task_id=task["task_id"], output_path=str(output_path))
+
+        except CodexExecRateLimitError as exc:
+            output_path.unlink(missing_ok=True)
+            error_message = _trim_error(str(exc))
+            mark_task_error(conn, task_id=task["task_id"], error=error_message)
+            if warning_callback is not None:
+                warning_callback(error_message)
+            if stop_event is not None:
+                stop_event.set()
+            exit_code = 1
+            return exit_code
 
         except (CodexExecTimeoutError, SchemaValidationError, RuntimeError) as exc:
             output_path.unlink(missing_ok=True)

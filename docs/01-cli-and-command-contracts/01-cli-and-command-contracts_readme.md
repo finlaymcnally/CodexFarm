@@ -82,6 +82,7 @@ These helpers shape behavior across multiple commands:
 - `_run_workers(...)`
 - starts `workers` threads, each `worker_loop(... once=True)`.
 - polls run status and prints progress lines.
+- shares a stop signal across workers; rate-limit terminal errors can halt new task claims early.
 - combined exit code is `1` if any worker exit code is non-zero or final error count is non-zero.
 
 # Command-by-command contract
@@ -328,7 +329,7 @@ Exit codes:
 
 Purpose:
 
-- End-to-end batch mode: create run + execute workers until queue is drained.
+- End-to-end batch mode: create run + execute workers until completion or early-stop conditions.
 
 Behavior:
 
@@ -339,6 +340,8 @@ Behavior:
 - Creates run+tasks (same internal path as `run create`).
 - Starts `N` worker threads with deterministic IDs `worker-1...worker-N`.
 - Polls status every second and prints progress.
+- If a worker hits codex rate-limit (`429` / rate-limit text), emits warning text and signals sibling workers to stop claiming new tasks.
+- Early-stop can leave tasks in `queued` state for later resume.
 - Collects worker exit codes and computes combined exit code.
 
 Output contract:
@@ -402,6 +405,7 @@ Exit codes:
 
 - `process --json` is machine-facing; keep stdout JSON-only.
 - `run create` default glob is always `"**/*.json"`, while `process` defaults to pipeline `input_glob_default` when `--glob` is omitted.
+- `process` intentionally hard-stops additional task claims on codex rate-limit (`429`) warnings to avoid amplifying API pressure.
 - Persisted run config must include absolute `farm_root`; include `workspace_root` only when explicitly provided.
 - `--workspace-root` is an override, not a fallback default.
 - `stats-dashboard` is read-only over telemetry input CSV and should continue writing a fully static bundle (`index.html` + `assets/` files).
@@ -413,3 +417,17 @@ Exit codes:
 1. If you add/rename a command or option, update tests in `tests/test_cli_integration_contracts.py` and related smoke tests.
 2. If you change any JSON shape, treat it as a contract change and update this doc plus callers/tests.
 3. If you move behavior into/out of CLI helpers, verify command output/exit behavior is unchanged unless intentionally versioning it.
+
+## Merged discoveries from `docs/understandings`
+
+Chronological details that were previously split across short exploration notes:
+
+- `2026-02-22_14.34.46`: `process --json` is a strict machine contract. Stdout must contain only the final JSON object; creation/progress lines belong on stderr.
+- `2026-02-22_14.34.46`: `run create` and `process` intentionally use different glob-default semantics. `run create` defaults to `"**/*.json"` while `process` falls back to the pipeline's `input_glob_default` when `--glob` is omitted/empty.
+- `2026-02-22_14.34.46`: Run config persistence is part of the CLI contract. `farm_root` is always persisted as an absolute path; `workspace_root` is persisted only when explicitly provided.
+- `2026-02-22_14.34.46`: In `one`, `codex_cd_mode=input_dir` and `input_file_dir` intentionally collapse to the same directory (`Path(--in).parent`) because no run-wide input root exists.
+
+Known rough edges to preserve context:
+
+- When stdout cleanliness breaks in `process --json`, downstream automation fails fast with JSON parse errors even if core processing still works.
+- Seemingly harmless "unification" of glob defaults across commands changes user-visible behavior and has broken expectations before.

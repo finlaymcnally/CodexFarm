@@ -14,6 +14,7 @@ read_when:
 - `--workspace-root` is an explicit override; when absent, workers resolve Codex `--cd` from pipeline `codex_cd_mode`.
 - `process --json` is a machine contract: stdout must be JSON only. Progress lines go to stderr.
 - `process` worker slots are in-process threads (`ThreadPoolExecutor`) and each worker opens its own SQLite connection; lease logic in `db.py` is the concurrency guard.
+- Codex rate-limit failures (`429` / "rate limit" text) are terminal on first hit: workers do not retry them, and `process` stops further task claims to avoid amplifying API pressure.
 - Task outputs are written atomically via temp file + rename in `codex_exec.py`; never mark tasks done on partial writes.
 - `run tasks --json` and `run errors --json` are the supported way to inspect per-task failures programmatically without reading SQLite directly.
 - Codex CLI compatibility rule: pass approval policy as a global flag (`codex --ask-for-approval ... exec ...`), not as `codex exec --ask-for-approval ...`.

@@ -90,13 +90,17 @@ Handled inside `worker_loop`:
 - Retryable failure classes:
   - `CodexExecTimeoutError`
   - `SchemaValidationError`
-  - `RuntimeError` raised when Codex subprocess result is not OK
+  - `RuntimeError` raised when Codex subprocess result is not OK (except detected rate limits)
   - unexpected exceptions (fallback branch)
 - For retryable failures:
   - worker deletes output file (`unlink(missing_ok=True)`)
   - if `attempts >= max_attempts`: mark terminal `error`
   - else: `requeue_task(...)` to `status='queued'`
 - Terminal without retry (configuration/setup failures before execution):
+  - `CodexExecRateLimitError` (detected from `429` / rate-limit text in codex stderr/stdout tail)
+    - marks current task terminal `error` immediately
+    - emits warning text
+    - sets shared stop event (when provided by caller) so sibling workers stop claiming new tasks
   - invalid/unknown farm root
   - invalid `workspace_root`
   - unknown `pipeline_id` in run metadata
@@ -190,3 +194,19 @@ When modifying this chunk:
 3. Ensure every failure branch clears/handles output file consistently.
 4. Keep terminal-vs-retry behavior explicit; do not silently strand tasks in `running`.
 5. Re-run worker/db/process tests together, not in isolation.
+
+## Merged discoveries from `docs/understandings`
+
+These worker-flow notes are now folded into the chunk doc:
+
+- `2026-02-20_12.50.00`: `process` uses in-process thread fan-out, not nested `codex-farm worker` subprocesses; safety comes from SQLite leasing, not thread-local locks.
+- `2026-02-20_12.50.00`: Lease claim is atomic (`BEGIN IMMEDIATE` + `attempts += 1`) and prevents duplicate task claims under concurrency.
+- `2026-02-20_13.24.12`: End-to-end success path is lease -> codex execution -> local schema validation -> task transition -> run-status inference.
+- `2026-02-20_13.24.12`: End-to-end failure path accepts non-zero codex exits only when payload exists; local schema gate still determines done/error routing.
+- `2026-02-22_14.34.10`: Attempt budget is consumed when a lease is claimed, including expired-lease reclaims after crashes.
+- `2026-02-22_14.34.10`: Guard branch `attempts > max_attempts` is required to terminate over-budget reclaimed tasks before execution.
+- `2026-02-23_00.24.39`: HTTP `429`/rate-limit codex failures are terminal on first hit and trigger worker-stop signaling to avoid amplifying rate-limit pressure.
+
+Known bad path to avoid:
+
+- Interpreting `attempts` as "number of completed runs" causes retry-budget math bugs; in this system `attempts` means "number of lease claims."

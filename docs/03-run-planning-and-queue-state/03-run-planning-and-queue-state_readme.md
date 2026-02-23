@@ -253,3 +253,13 @@ If you change anything in this chunk:
 2. re-check state inference rules in `db.run_status`
 3. re-check `rel_output_path` mapping for nested paths and extension swaps
 4. update this README and any affected chunk docs (especially 04 if worker-facing behavior changes)
+
+## Merged discoveries from `docs/understandings`
+
+- `2026-02-22_14.34.04`: `run create` and `process` share one planning seam (`_create_run_for_paths`) that resolves absolute paths, expands sorted file inputs, creates one run row, and enqueues one task row per input.
+- `2026-02-22_14.34.04`: The real run state contract is task-derived. `runs.status` is synchronized to inferred task counts; it is not independent truth.
+- `2026-02-22_14.34.04`: `runs.config_json` is a queue-planning seam, not just metadata storage. It intentionally persists `farm_root` always and `workspace_root` only when explicitly passed so worker resume semantics stay deterministic.
+
+Known trap:
+
+- Edits that only touch worker transitions can still alter user-visible run status because `run_status` inference depends on task counts and transition timing.
