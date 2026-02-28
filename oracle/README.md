@@ -129,10 +129,12 @@ Cause:
 Fix:
 - Run `./oracle/cleanup-stale.sh` and retry smoke (stale Chrome/oracle processes can trigger false waits).
 - Keep preflight + repo-local profile in sync.
+- If it still fails, refresh login directly in repo-local profile with `./oracle/wsl-login.sh`.
 - Optional advanced mode (not recommended here unless you have keytar/libsecret deps):
   ```bash
   ORACLE_BROWSER_MANUAL_LOGIN=0
   ```
+  This environment currently lacks `libsecret-1.so.0`, so non-manual cookie sync fails.
 
 ### Oracle run steals mouse/keyboard focus
 

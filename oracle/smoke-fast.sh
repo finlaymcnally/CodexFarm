@@ -18,6 +18,7 @@ cd "$REPO_ROOT"
 ./oracle/cleanup-stale.sh
 ./oracle/preflight.sh
 
+set +e
 timeout --signal=TERM 120s /home/mcnal/.local/bin/oracle-browser-headless \
   --model gpt-5-instant \
   --slug oracle-fast-smoke \
@@ -26,10 +27,13 @@ timeout --signal=TERM 120s /home/mcnal/.local/bin/oracle-browser-headless \
   --browser-attachments never \
   --browser-inline-files \
   -p "Reply with exactly OK."
-
 status=$?
+set -e
 ./oracle/cleanup-stale.sh >/dev/null || true
 if [[ "$status" -eq 124 ]]; then
   echo "FAIL: smoke-fast timed out (>120s). Treating as broken run."
+fi
+if [[ "$status" -ne 0 ]]; then
+  echo "HINT: if login/session errors appear, run ./oracle/wsl-login.sh and retry."
 fi
 exit "$status"
