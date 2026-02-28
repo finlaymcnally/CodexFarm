@@ -21,9 +21,10 @@ Code lives under `src/`, but this folder explains how and why that code is expec
 
 1. `docs/AGENTS.md` for required docs workflow and front-matter rules.
 2. `docs/how-codex-farm-works.md` for the full end-to-end runtime story.
-3. `docs/IMPORTANT CONVENTIONS.md` for hidden invariants and non-obvious rules.
-4. `docs/01-cli-and-command-contracts/01-cli-and-command-contracts_readme.md` through `docs/07-analytics/07-analytics_readme.md` for boundary ownership.
-5. `docs/how-codex-farm-works-for-AI.md` when you need deep debugging-level context.
+3. `docs/01-cli-and-command-contracts/01-cli-and-command-contracts_readme.md` through `docs/07-analytics/07-analytics_readme.md` for boundary ownership and non-obvious runtime rules.
+4. `docs/08-external-program-reference/README.md` for caller-facing machine contracts.
+5. `docs/AI_Context.md` for cross-cutting runtime invariants and debugging flow.
+6. `docs/how-codex-farm-works-for-AI.md` when you need deep debugging-level context.
 
 If your task matches a `read_when` hint in any file, read that file before coding.
 
@@ -43,6 +44,8 @@ If your task matches a `read_when` hint in any file, read that file before codin
   Owns cross-boundary integration checks and fixture expectations.
 - `docs/07-analytics/07-analytics_readme.md`
   Owns telemetry CSV + static dashboard contracts.
+- `docs/08-external-program-reference/`
+  Caller-facing reference docs for external programs integrating via CLI/JSON.
 - `docs/understandings/`
   Timestamped short discoveries from code exploration.
 - `docs/plans/`
@@ -83,7 +86,7 @@ read_when:
 - Changed behavior at a specific code boundary:
   Update the matching chunk README (`01` through `07`).
 - Learned or changed a cross-cutting invariant:
-  Update `docs/IMPORTANT CONVENTIONS.md`.
+  Update the relevant chunk README non-obvious/discoveries section and caller references in `docs/08-external-program-reference/` when machine-facing behavior changes.
 - Spent time untangling a non-trivial code path:
   Add a timestamped note in `docs/understandings/`.
 - Designing or implementing a significant feature/refactor:
@@ -95,7 +98,7 @@ read_when:
 2. Read files whose `read_when` matches your task.
 3. Make code changes.
 4. Update docs in the same boundary so docs stay source-aligned.
-5. Add/update `understandings` or `IMPORTANT CONVENTIONS` when new hidden rules are discovered.
+5. Add/update `docs/understandings/` plus the relevant chunk README sections when new hidden rules are discovered.
 
 ## Timestamp rule used in this repo
 

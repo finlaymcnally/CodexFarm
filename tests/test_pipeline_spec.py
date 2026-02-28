@@ -14,6 +14,7 @@ def test_load_pipelines_reads_known_specs() -> None:
     assert "recipe.schemaorg.normalize.v1" in pipelines
     assert "recipe.schemaorg.to_proprietary.v1" in pipelines
     assert pipelines["recipe.schemaorg.normalize.v1"].codex_cd_mode == "asset_root"
+    assert pipelines["recipe.schemaorg.normalize.v1"].source_path.name.endswith(".json")
 
 
 def test_render_prompt_template_replaces_input_path(tmp_path: Path) -> None:
@@ -74,6 +75,72 @@ def test_load_pipelines_rejects_unknown_codex_cd_mode(tmp_path: Path) -> None:
         "codex_cd_mode": "somewhere_else",
     }
     (tmp_path / "pipelines" / "demo.bad.mode.v1.json").write_text(
+        json.dumps(payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "prompts" / "demo.txt").write_text("INPUT={{INPUT_PATH}}\n", encoding="utf-8")
+    (tmp_path / "schemas" / "demo.schema.json").write_text(
+        json.dumps(
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "required": ["ok"],
+                "properties": {"ok": {"type": "string"}},
+                "additionalProperties": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError):
+        load_pipelines(tmp_path / "pipelines")
+
+
+def test_load_pipelines_reads_explicit_codex_reasoning_effort(tmp_path: Path) -> None:
+    for folder in ("pipelines", "prompts", "schemas"):
+        (tmp_path / folder).mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "pipeline_id": "demo.effort.v1",
+        "description": "demo",
+        "prompt_template_path": "prompts/demo.txt",
+        "output_schema_path": "schemas/demo.schema.json",
+        "codex_reasoning_effort": "high",
+    }
+    (tmp_path / "pipelines" / "demo.effort.v1.json").write_text(
+        json.dumps(payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "prompts" / "demo.txt").write_text("INPUT={{INPUT_PATH}}\n", encoding="utf-8")
+    (tmp_path / "schemas" / "demo.schema.json").write_text(
+        json.dumps(
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "required": ["ok"],
+                "properties": {"ok": {"type": "string"}},
+                "additionalProperties": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_pipelines(tmp_path / "pipelines")
+    assert loaded["demo.effort.v1"].codex_reasoning_effort == "high"
+
+
+def test_load_pipelines_rejects_unknown_codex_reasoning_effort(tmp_path: Path) -> None:
+    for folder in ("pipelines", "prompts", "schemas"):
+        (tmp_path / folder).mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "pipeline_id": "demo.bad.effort.v1",
+        "description": "demo",
+        "prompt_template_path": "prompts/demo.txt",
+        "output_schema_path": "schemas/demo.schema.json",
+        "codex_reasoning_effort": "ultra",
+    }
+    (tmp_path / "pipelines" / "demo.bad.effort.v1.json").write_text(
         json.dumps(payload, indent=2) + "\n",
         encoding="utf-8",
     )

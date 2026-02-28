@@ -10,10 +10,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 
 CodexCdMode = Literal["asset_root", "input_dir", "input_file_dir"]
+CodexReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh"]
 
 
 @dataclass(frozen=True)
 class PipelineSpec:
+    source_path: Path
     pipeline_id: str
     description: str
     prompt_template_path: Path
@@ -24,6 +26,7 @@ class PipelineSpec:
     codex_sandbox: str
     codex_ask_for_approval: str
     codex_web_search: str
+    codex_reasoning_effort: CodexReasoningEffort | None
     codex_timeout_seconds: int
     codex_cd_mode: CodexCdMode
 
@@ -43,6 +46,7 @@ class PipelineSpecModel(BaseModel):
     codex_sandbox: str = "read-only"
     codex_ask_for_approval: str = "never"
     codex_web_search: str = "disabled"
+    codex_reasoning_effort: CodexReasoningEffort | None = None
     codex_timeout_seconds: int = Field(default=180, ge=1)
     codex_cd_mode: CodexCdMode = "asset_root"
 
@@ -55,14 +59,39 @@ class PipelineSpecModel(BaseModel):
 
 
 def _resolve_repo_relative(repo_root: Path, rel_path: str) -> Path:
+    return resolve_repo_relative_path(repo_root, rel_path, require_exists=True)
+
+
+def resolve_repo_relative_path(
+    repo_root: Path,
+    rel_path: str,
+    *,
+    require_exists: bool = True,
+) -> Path:
+    """Resolve a repo-relative path, optionally requiring that it already exists."""
     path = (repo_root / rel_path).resolve()
-    if not path.exists():
+    if require_exists and not path.exists():
         raise FileNotFoundError(f"Referenced file does not exist: {rel_path}")
     return path
 
 
-def _to_spec(*, model: PipelineSpecModel, repo_root: Path) -> PipelineSpec:
+def parse_pipeline_model_file(path: Path) -> PipelineSpecModel:
+    """Parse and validate a single pipeline JSON file."""
+    raw_text = path.read_text(encoding="utf-8")
+    try:
+        return PipelineSpecModel.model_validate_json(raw_text)
+    except ValidationError as exc:
+        raise ValueError(str(exc)) from exc
+
+
+def _to_spec(
+    *,
+    model: PipelineSpecModel,
+    repo_root: Path,
+    source_path: Path,
+) -> PipelineSpec:
     return PipelineSpec(
+        source_path=source_path.resolve(),
         pipeline_id=model.pipeline_id,
         description=model.description,
         prompt_template_path=_resolve_repo_relative(repo_root, model.prompt_template_path),
@@ -73,6 +102,7 @@ def _to_spec(*, model: PipelineSpecModel, repo_root: Path) -> PipelineSpec:
         codex_sandbox=model.codex_sandbox,
         codex_ask_for_approval=model.codex_ask_for_approval,
         codex_web_search=model.codex_web_search,
+        codex_reasoning_effort=model.codex_reasoning_effort,
         codex_timeout_seconds=model.codex_timeout_seconds,
         codex_cd_mode=model.codex_cd_mode,
     )
@@ -85,10 +115,9 @@ def load_pipelines(pipelines_dir: Path) -> dict[str, PipelineSpec]:
 
     for path in sorted(pipelines_dir.glob("*.json")):
         try:
-            raw_text = path.read_text(encoding="utf-8")
-            model = PipelineSpecModel.model_validate_json(raw_text)
-            spec = _to_spec(model=model, repo_root=repo_root)
-        except (ValidationError, FileNotFoundError, ValueError) as exc:
+            model = parse_pipeline_model_file(path)
+            spec = _to_spec(model=model, repo_root=repo_root, source_path=path)
+        except (FileNotFoundError, ValueError) as exc:
             raise ValueError(f"Invalid pipeline file {path}: {exc}") from exc
 
         if spec.pipeline_id in loaded:

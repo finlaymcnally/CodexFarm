@@ -27,19 +27,52 @@ class CodexExecResult:
     ok: bool
     exit_code: int
     stderr_tail: str
+    stdout_tail: str = ""
 
 
 class CodexExecTimeoutError(TimeoutError):
     """Raised when codex exec exceeds timeout."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        stdout_tail: str = "",
+        stderr_tail: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.stdout_tail = stdout_tail
+        self.stderr_tail = stderr_tail
+
 
 class CodexExecRateLimitError(RuntimeError):
     """Raised when codex exec reports API rate limiting (HTTP 429)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after_seconds: int | None = None,
+        stderr_tail: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+        self.stderr_tail = stderr_tail
 
 
 _RATE_LIMIT_PATTERN = re.compile(
     r"\b429\b|too many requests|rate[ -]?limit(?:ed|ing)?",
     re.IGNORECASE,
+)
+_RETRY_AFTER_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"(?:retry(?:ing)?\s+after|retry-?after[:=\s]+)\s*(\d+)\s*(seconds?|secs?|s|minutes?|mins?|m)?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"try again in\s+(\d+)\s*(seconds?|secs?|s|minutes?|mins?|m)?",
+        re.IGNORECASE,
+    ),
 )
 
 
@@ -48,6 +81,27 @@ def is_rate_limit_message(text: str) -> bool:
     if not text:
         return False
     return _RATE_LIMIT_PATTERN.search(text) is not None
+
+
+def extract_retry_after_seconds(text: str) -> int | None:
+    """Best-effort parser for explicit retry-after hints in provider messages."""
+    if not text:
+        return None
+    for pattern in _RETRY_AFTER_PATTERNS:
+        match = pattern.search(text)
+        if match is None:
+            continue
+        try:
+            value = int(match.group(1))
+        except ValueError:
+            continue
+        if value <= 0:
+            continue
+        raw_unit = (match.group(2) or "s").strip().lower()
+        if raw_unit.startswith("m"):
+            value *= 60
+        return value
+    return None
 
 
 _USAGE_LOG_FIELDS = (
@@ -63,17 +117,24 @@ _USAGE_LOG_FIELDS = (
     "sandbox",
     "ask_for_approval",
     "web_search",
+    "reasoning_effort",
     "cd_dir",
     "output_schema_path",
     "output_path",
     "output_payload_present",
     "output_bytes",
+    "output_sha256",
+    "output_preview",
+    "output_preview_chars",
+    "output_preview_truncated",
     "tokens_input",
     "tokens_cached_input",
     "tokens_output",
     "tokens_total",
     "usage_json",
     "thread_id",
+    "codex_event_count",
+    "codex_event_types_json",
     "prompt_chars",
     "prompt_sha256",
     "prompt_text",
@@ -85,8 +146,24 @@ _USAGE_LOG_FIELDS = (
     "task_id",
     "worker_id",
     "input_path",
+    "heads_up_applied",
+    "heads_up_tip_count",
+    "heads_up_input_signature",
+    "heads_up_tip_ids_json",
+    "heads_up_tip_texts_json",
+    "heads_up_tip_scores_json",
+    "attempt_index",
+    "lease_claim_index",
+    "execution_attempt_index",
+    "retry_context_applied",
+    "retry_previous_error",
+    "retry_previous_error_chars",
+    "retry_previous_error_sha256",
+    "failure_category",
+    "rate_limit_suspected",
 )
 _USAGE_LOG_LOCK = threading.Lock()
+_OUTPUT_PREVIEW_BYTES = 2400
 
 
 def _tail_lines(text: str, max_lines: int = 20) -> str:
@@ -126,6 +203,21 @@ def _parse_jsonl_events(stdout: str) -> tuple[list[dict[str, object]], list[str]
                 continue
         passthrough_lines.append(raw)
     return events, passthrough_lines
+
+
+def _event_types(events: list[dict[str, object]]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for event in events:
+        raw_type = event.get("type")
+        if not isinstance(raw_type, str):
+            continue
+        event_type = raw_type.strip()
+        if not event_type or event_type in seen:
+            continue
+        seen.add(event_type)
+        ordered.append(event_type)
+    return ordered
 
 
 def _extract_usage(
@@ -168,6 +260,65 @@ def _csv_cell(value: object) -> str:
     return str(value)
 
 
+def _output_payload_snapshot(
+    path: Path,
+    *,
+    preview_bytes: int = _OUTPUT_PREVIEW_BYTES,
+) -> tuple[str, str, bool]:
+    digest = hashlib.sha256()
+    preview = bytearray()
+    truncated = False
+    try:
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                if len(preview) < preview_bytes:
+                    remaining = preview_bytes - len(preview)
+                    preview.extend(chunk[:remaining])
+                    if len(chunk) > remaining:
+                        truncated = True
+                else:
+                    truncated = True
+    except OSError:
+        return "", "", False
+    return digest.hexdigest(), preview.decode("utf-8", errors="replace"), truncated
+
+
+def _json_list_cell(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return json.dumps(list(value), sort_keys=True)
+    return ""
+
+
+def _failure_category(
+    *,
+    status: str,
+    exit_code: int | None,
+    output_payload_present: bool,
+    accepted_nonzero_exit: bool,
+) -> str:
+    if status == "ok" and accepted_nonzero_exit:
+        return "accepted_nonzero_exit"
+    if status == "timeout":
+        return "timeout"
+    if status != "failed":
+        return ""
+    if exit_code is None:
+        return "failed_unknown"
+    if exit_code != 0 and not output_payload_present:
+        return "nonzero_exit_no_payload"
+    if exit_code == 0 and not output_payload_present:
+        return "zero_exit_no_payload"
+    return "failed"
+
+
 def _append_usage_row(path: Path, row: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with _USAGE_LOG_LOCK:
@@ -202,11 +353,16 @@ def _log_codex_activity(
     sandbox: str,
     ask_for_approval: str,
     web_search: str,
+    reasoning_effort: str | None,
     cd_dir: Path,
     output_schema: Path,
+    output_schema_logical_path: Path | None,
     output_path: Path,
     output_payload_present: bool,
     output_bytes: int,
+    output_sha256: str,
+    output_preview: str,
+    output_preview_truncated: bool,
     prompt: str,
     stdout: str,
     stderr: str,
@@ -215,6 +371,7 @@ def _log_codex_activity(
         return
 
     events, passthrough_lines = _parse_jsonl_events(stdout)
+    event_types = _event_types(events)
     usage, thread_id = _extract_usage(events)
     tokens_input = _as_int(usage.get("input_tokens"))
     tokens_cached_input = _as_int(usage.get("cached_input_tokens"))
@@ -225,8 +382,22 @@ def _log_codex_activity(
 
     stderr_tail = _tail_lines(stderr)
     stdout_tail = _tail_lines("\n".join(passthrough_lines))
+    combined_tails = "\n".join(part for part in (stderr_tail, stdout_tail) if part).strip()
 
     context = usage_context or {}
+    retry_previous_error = context.get("retry_previous_error")
+    retry_error_text = ""
+    if isinstance(retry_previous_error, str):
+        retry_error_text = retry_previous_error.strip()
+    retry_error_sha = (
+        hashlib.sha256(retry_error_text.encode("utf-8")).hexdigest() if retry_error_text else ""
+    )
+    failure_category = _failure_category(
+        status=status,
+        exit_code=exit_code,
+        output_payload_present=output_payload_present,
+        accepted_nonzero_exit=accepted_nonzero_exit,
+    )
     row = {
         "logged_at_utc": _utc_ts(datetime.now(UTC)),
         "started_at_utc": _utc_ts(started_at),
@@ -240,17 +411,26 @@ def _log_codex_activity(
         "sandbox": sandbox,
         "ask_for_approval": ask_for_approval,
         "web_search": web_search,
+        "reasoning_effort": reasoning_effort,
         "cd_dir": str(cd_dir.resolve()),
-        "output_schema_path": str(output_schema.resolve()),
+        "output_schema_path": str(
+            (output_schema_logical_path or output_schema).expanduser().resolve()
+        ),
         "output_path": str(output_path.resolve()),
         "output_payload_present": output_payload_present,
         "output_bytes": output_bytes,
+        "output_sha256": output_sha256,
+        "output_preview": output_preview,
+        "output_preview_chars": len(output_preview),
+        "output_preview_truncated": output_preview_truncated,
         "tokens_input": tokens_input,
         "tokens_cached_input": tokens_cached_input,
         "tokens_output": tokens_output,
         "tokens_total": tokens_total,
         "usage_json": json.dumps(usage, sort_keys=True) if usage else "",
         "thread_id": thread_id,
+        "codex_event_count": len(events),
+        "codex_event_types_json": json.dumps(event_types, sort_keys=True) if event_types else "",
         "prompt_chars": len(prompt),
         "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
         "prompt_text": prompt,
@@ -262,6 +442,21 @@ def _log_codex_activity(
         "task_id": context.get("task_id"),
         "worker_id": context.get("worker_id"),
         "input_path": context.get("input_path"),
+        "heads_up_applied": context.get("heads_up_applied"),
+        "heads_up_tip_count": context.get("heads_up_tip_count"),
+        "heads_up_input_signature": context.get("heads_up_input_signature"),
+        "heads_up_tip_ids_json": _json_list_cell(context.get("heads_up_tip_ids_json")),
+        "heads_up_tip_texts_json": _json_list_cell(context.get("heads_up_tip_texts_json")),
+        "heads_up_tip_scores_json": _json_list_cell(context.get("heads_up_tip_scores_json")),
+        "attempt_index": _as_int(context.get("attempt_index")),
+        "lease_claim_index": _as_int(context.get("lease_claim_index")),
+        "execution_attempt_index": _as_int(context.get("execution_attempt_index")),
+        "retry_context_applied": context.get("retry_context_applied"),
+        "retry_previous_error": retry_error_text,
+        "retry_previous_error_chars": len(retry_error_text),
+        "retry_previous_error_sha256": retry_error_sha,
+        "failure_category": failure_category,
+        "rate_limit_suspected": is_rate_limit_message(combined_tails),
     }
 
     try:
@@ -282,6 +477,8 @@ def run_codex_exec(
     output_schema: Path,
     output_path: Path,
     timeout_seconds: int,
+    output_schema_logical_path: Path | None = None,
+    reasoning_effort: str | None = None,
     usage_log_csv: Path | None = None,
     usage_context: Mapping[str, object] | None = None,
 ) -> CodexExecResult:
@@ -314,13 +511,24 @@ def run_codex_exec(
         sandbox,
         "--config",
         f"web_search={web_search}",
-        "--output-schema",
-        str(output_schema.resolve()),
-        "--output-last-message",
-        str(temp_output_path),
-        "--json",
-        prompt,
     ]
+    if reasoning_effort is not None:
+        cmd.extend(
+            [
+                "--config",
+                f'model_reasoning_effort="{reasoning_effort}"',
+            ]
+        )
+    cmd.extend(
+        [
+            "--output-schema",
+            str(output_schema.resolve()),
+            "--output-last-message",
+            str(temp_output_path),
+            "--json",
+            prompt,
+        ]
+    )
 
     try:
         proc = subprocess.run(
@@ -333,8 +541,17 @@ def run_codex_exec(
     except subprocess.TimeoutExpired as exc:
         timeout_stdout = _coerce_text(exc.stdout)
         timeout_stderr = _coerce_text(exc.stderr)
+        timeout_stdout_tail = _tail_lines(timeout_stdout)
+        timeout_stderr_tail = _tail_lines(timeout_stderr)
         temp_has_payload = temp_output_path.exists() and temp_output_path.stat().st_size > 0
         output_bytes = temp_output_path.stat().st_size if temp_has_payload else 0
+        output_sha256 = ""
+        output_preview = ""
+        output_preview_truncated = False
+        if temp_has_payload:
+            output_sha256, output_preview, output_preview_truncated = _output_payload_snapshot(
+                temp_output_path
+            )
         if temp_output_path.exists():
             temp_output_path.unlink(missing_ok=True)
         finished_at = datetime.now(UTC)
@@ -353,17 +570,24 @@ def run_codex_exec(
             sandbox=sandbox,
             ask_for_approval=ask_for_approval,
             web_search=web_search,
+            reasoning_effort=reasoning_effort,
             cd_dir=cd_dir,
             output_schema=output_schema,
+            output_schema_logical_path=output_schema_logical_path,
             output_path=output_path,
             output_payload_present=temp_has_payload,
             output_bytes=output_bytes,
+            output_sha256=output_sha256,
+            output_preview=output_preview,
+            output_preview_truncated=output_preview_truncated,
             prompt=prompt,
             stdout=timeout_stdout,
             stderr=timeout_stderr,
         )
         raise CodexExecTimeoutError(
-            f"codex exec timed out after {timeout_seconds}s"
+            f"codex exec timed out after {timeout_seconds}s",
+            stdout_tail=timeout_stdout_tail,
+            stderr_tail=timeout_stderr_tail,
         ) from exc
 
     passthrough_lines = _parse_jsonl_events(proc.stdout)[1]
@@ -373,13 +597,25 @@ def run_codex_exec(
         stderr_tail = stdout_tail
     temp_has_payload = temp_output_path.exists() and temp_output_path.stat().st_size > 0
     output_bytes = temp_output_path.stat().st_size if temp_has_payload else 0
+    output_sha256 = ""
+    output_preview = ""
+    output_preview_truncated = False
+    if temp_has_payload:
+        output_sha256, output_preview, output_preview_truncated = _output_payload_snapshot(
+            temp_output_path
+        )
     accepted_nonzero_exit = proc.returncode != 0 and temp_has_payload
     status = "ok"
 
     if proc.returncode != 0 and not temp_has_payload:
         temp_output_path.unlink(missing_ok=True)
         status = "failed"
-        result = CodexExecResult(ok=False, exit_code=proc.returncode, stderr_tail=stderr_tail)
+        result = CodexExecResult(
+            ok=False,
+            exit_code=proc.returncode,
+            stderr_tail=stderr_tail,
+            stdout_tail=stdout_tail,
+        )
     elif not temp_has_payload:
         temp_output_path.unlink(missing_ok=True)
         status = "failed"
@@ -387,10 +623,16 @@ def run_codex_exec(
             ok=False,
             exit_code=proc.returncode,
             stderr_tail="codex exec exited 0 but produced no output file",
+            stdout_tail=stdout_tail,
         )
     else:
         os.replace(temp_output_path, output_path)
-        result = CodexExecResult(ok=True, exit_code=proc.returncode, stderr_tail=stderr_tail)
+        result = CodexExecResult(
+            ok=True,
+            exit_code=proc.returncode,
+            stderr_tail=stderr_tail,
+            stdout_tail=stdout_tail,
+        )
 
     finished_at = datetime.now(UTC)
     duration_ms = int((time.perf_counter() - started_clock) * 1000)
@@ -408,11 +650,16 @@ def run_codex_exec(
         sandbox=sandbox,
         ask_for_approval=ask_for_approval,
         web_search=web_search,
+        reasoning_effort=reasoning_effort,
         cd_dir=cd_dir,
         output_schema=output_schema,
+        output_schema_logical_path=output_schema_logical_path,
         output_path=output_path,
         output_payload_present=temp_has_payload,
         output_bytes=output_bytes,
+        output_sha256=output_sha256,
+        output_preview=output_preview,
+        output_preview_truncated=output_preview_truncated,
         prompt=prompt,
         stdout=proc.stdout,
         stderr=proc.stderr,

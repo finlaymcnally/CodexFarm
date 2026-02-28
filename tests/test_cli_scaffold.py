@@ -27,3 +27,4 @@ def test_pipelines_new_generates_files(tmp_path: Path) -> None:
 
     payload = json.loads(pipeline_path.read_text(encoding="utf-8"))
     assert payload["codex_cd_mode"] == "asset_root"
+    assert payload["codex_reasoning_effort"] is None

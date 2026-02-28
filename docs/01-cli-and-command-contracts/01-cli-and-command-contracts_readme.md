@@ -34,6 +34,7 @@ This chunk is mostly a contract/orchestration layer. It delegates deeper behavio
 
 - `doctor`
 - `init`
+- `lint`
 - `one`
 - `stats-dashboard`
 - `worker`
@@ -41,10 +42,17 @@ This chunk is mostly a contract/orchestration layer. It delegates deeper behavio
 - `go`
 - `pipelines list`
 - `pipelines new`
+- `models list`
+- `heads-up list`
+- `heads-up clear`
+- `heads-up learn`
 - `run create`
 - `run status`
 - `run tasks`
 - `run errors`
+- `run forensics`
+- `run telemetry`
+- `run autotune`
 
 Most commands do 3 things:
 
@@ -64,6 +72,14 @@ These helpers shape behavior across multiple commands:
 - returns `None` if not provided.
 - otherwise requires an existing directory; else raises `typer.BadParameter`.
 
+- `_resolve_model_override_or_die(model)`
+- returns `None` if not provided.
+- otherwise trims and validates non-empty override text; raises `typer.BadParameter` on empty input.
+
+- `_resolve_reasoning_effort_override_or_die(reasoning_effort)`
+- accepts normalized Codex effort values: `none|minimal|low|medium|high|xhigh`.
+- supports CLI aliases: `--effort`, `--reasoning-effort`, `--thinking-effort`, `--codex-reasoning-effort`, `--codex-thinking-effort`.
+
 - `_resolve_one_cd_dir(...)`
 - for `one`, `--workspace-root` wins.
 - without override:
@@ -73,16 +89,23 @@ These helpers shape behavior across multiple commands:
 
 - `_init_data_dir(data_dir)`
 - creates `data_dir`, `inbox/`, `outbox/`.
+- creates `run_assets/` for per-run frozen execution snapshots.
 - opens DB at `<data_dir>/codex_farm.sqlite3` and runs `init_db(...)`.
 
 - `_create_run_for_paths(...)`
 - globs files and fails fast if no files matched.
-- creates run row and enqueues one task per input.
+- allocates run ID, freezes prompt/schema/pipeline assets under `<data_dir>/run_assets/<run_id>/`, then creates run row + enqueues one task per input.
+- persists snapshot pointer in `runs.config_json.frozen_assets`:
+  - `version`
+  - `manifest_relpath`
+- on DB write/enqueue failure after freezing, removes the snapshot best-effort and re-raises the original error.
 
 - `_run_workers(...)`
 - starts `workers` threads, each `worker_loop(... once=True)`.
 - polls run status and prints progress lines.
-- shares a stop signal across workers; rate-limit terminal errors can halt new task claims early.
+- progress polling waits on pending worker futures with `timeout=poll_seconds`, so fast-completing runs do not always pay an extra full poll-sleep before finishing.
+- this `wait(..., return_when=FIRST_COMPLETED)` approach is intentional; prior fixed-sleep polling added avoidable latency in fast mocked/test runs.
+- worker warnings are forwarded to stderr, including adaptive 429 cooldown/recovery transitions.
 - combined exit code is `1` if any worker exit code is non-zero or final error count is non-zero.
 
 # Command-by-command contract
@@ -119,6 +142,33 @@ Behavior:
 Exit codes:
 
 - `0` on success.
+
+## `lint`
+
+Purpose:
+
+- Run a local, read-only preflight over a pack (`--root`) or one schema file (`--schema`).
+
+Behavior:
+
+- Pack mode: `codex-farm lint [--root <pack-root>] [--pipeline <pipeline-id>]`.
+- Schema mode: `codex-farm lint --schema <schema-path>`.
+- `--schema` and `--pipeline` are mutually exclusive.
+- `--strict` only changes exit behavior:
+  - default: exit `0` when no errors exist (warnings allowed).
+  - strict: exit `1` when warnings exist.
+- `--json` emits one stdout object with `target`, `ok`, `error_count`, `warning_count`, `scanned`, and `findings`.
+- Explicit near-miss roots are allowed for linting:
+  - if `--root` points at an existing directory missing sentinels, lint reports `pack.missing_sentinel_dirs` instead of failing argument parsing.
+- Linting is filesystem-only:
+  - no Codex subprocess calls
+  - no SQLite access
+  - no file writes
+
+Exit codes:
+
+- `0`: no errors (`--strict` off) or fully clean (`--strict` on).
+- `1`: one or more errors, or warnings when `--strict` is enabled.
 
 ## `stats-dashboard`
 
@@ -190,6 +240,64 @@ Non-obvious defaults written into new pipeline JSON:
 - timeout: `180`
 - cd mode: `asset_root`
 
+## `models list`
+
+Purpose:
+
+- Expose caller-facing model choices from local Codex metadata.
+
+Behavior:
+
+- Reads visible model rows from local `models_cache.json` files under Codex home directories.
+- Includes visibility values `list` and `default`; ignores hidden/private rows.
+- Deduplicates by model `slug`.
+- Normalizes optional supported reasoning-effort metadata when present.
+- If no cache rows are available, returns one fallback model row for `gpt-5.3-codex-spark`.
+
+Output:
+
+- text mode: one line per model with optional description and effort hints.
+- JSON mode: array of objects:
+  - `slug`
+  - `display_name`
+  - `description`
+  - optional `supported_reasoning_efforts`
+
+## `heads-up list`
+
+Purpose:
+
+- Inspect learned Heads Up tips for one pipeline.
+
+Behavior:
+
+- Reads rows from `heads_up_tips` for `--pipeline`.
+- Supports `--json` machine output.
+
+## `heads-up clear`
+
+Purpose:
+
+- Delete learned Heads Up tips for one pipeline.
+
+Behavior:
+
+- Requires confirmation unless `--yes` is passed.
+- Returns deleted row count in JSON mode.
+
+## `heads-up learn`
+
+Purpose:
+
+- Backfill or rerun post-run tip distillation for an existing run.
+
+Behavior:
+
+- Accepts `--run-id` plus optional model/effort overrides.
+- Requires run status to be terminal (`done` or `error`); non-terminal runs return warning output and add zero tips.
+- Executes one distiller call and upserts normalized tips.
+- Warning text is non-fatal and is returned in JSON payload when present.
+
 ## `one`
 
 Purpose:
@@ -200,11 +308,18 @@ Behavior:
 
 - Resolves farm root and optional workspace override.
 - Loads pipeline by ID.
+- Optional `--model`/`--codex-model` overrides pipeline `codex_model` for this invocation.
+- Optional reasoning-effort aliases override pipeline `codex_reasoning_effort`.
+- Optional `--output-schema` overrides pipeline `output_schema_path` for Codex structured output and local validation.
+- Optional `--heads-up` enables prompt augmentation from learned tips in local SQLite.
+- Optional `--heads-up-max-tips` caps appended tips (default `3`, min `1`, max `8`).
 - Resolves Codex `--cd` via `_resolve_one_cd_dir`.
 - Renders prompt from template (`{{INPUT_PATH}}` substitution).
+- When `--heads-up` is enabled, computes an input signature and appends matching `Heads up` tips before execution.
 - Runs Codex wrapper.
 - Validates output against schema.
 - Deletes output file if schema validation fails.
+- On failure, captures a best-effort forensics bundle under `<data_dir>/forensics/one/<forensics_id>/`.
 
 Exit codes:
 
@@ -215,6 +330,7 @@ Output:
 
 - success: `Wrote output: <abs path>`.
 - failure: specific error message from timeout/codex/schema path.
+- failure with captured bundle: one additional stderr line `Forensics bundle: <abs path>`.
 
 ## `run create`
 
@@ -227,8 +343,16 @@ Behavior:
 - Resolves roots and pipeline.
 - Ensures data dir + DB exist.
 - Uses explicit `--glob` value; default is `"**/*.json"`.
+- Optional `--incremental` enables planning-time reuse from a compatible prior run.
+- Optional `--incremental-from <run_id>` forces one source run and fails if it is missing, non-terminal, or incompatible.
 - Persists run config JSON with absolute paths and `farm_root`.
 - Adds `workspace_root` only when user passed `--workspace-root`.
+- Adds `codex_model` only when user passed `--model`.
+- Adds `codex_reasoning_effort` only when user passed an effort override.
+- Adds `output_schema_path_override` only when user passed `--output-schema`.
+- Always persists `heads_up_enabled` and `heads_up_max_tips` for worker determinism.
+- Always persists `incremental_enabled` and `incremental_source_run_id` in run config for reproducibility.
+- Computes and stores `runs.execution_fingerprint` and can pre-materialize reused outputs before worker start.
 
 Output:
 
@@ -243,7 +367,24 @@ Output:
   "output_dir": "absolute path",
   "total": 1,
   "farm_root": "absolute path",
-  "workspace_root": "absolute path or null"
+  "workspace_root": "absolute path or null",
+  "codex_model": "resolved model string",
+  "codex_reasoning_effort": "resolved effort string or null",
+  "output_schema_path": "resolved schema path",
+  "heads_up_enabled": false,
+  "heads_up_max_tips": 3,
+  "incremental": {
+    "enabled": false,
+    "source_run_id": null,
+    "reused": 0,
+    "queued": 0,
+    "fallback_counts": {
+      "no_prior_success": 0,
+      "hash_changed": 0,
+      "source_output_missing": 0,
+      "source_output_invalid": 0
+    }
+  }
 }
 ```
 
@@ -285,15 +426,17 @@ Purpose:
 
 Behavior:
 
-- Validates `--status` against `queued|running|done|error`.
+- Validates `--status` against `queued|running|done|error|canceled`.
 
 Output:
 
 - JSON mode: array of task rows with:
-- `input_path`, `rel_output_path`, `status`, `attempts`, `error`, `output_path`
+- `input_path`, `rel_output_path`, `status`, `attempts`, `lease_claims`, `execution_attempts`, `last_heartbeat_at`, `error`, `output_path`
+- additive reuse fields: `reused`, `reused_from_run_id`, `reused_from_task_id`
 - text mode:
 - `No tasks found.` when empty
-- otherwise one line per task + optional indented error line.
+- otherwise one line per task + optional `[reused]` marker + optional indented error line.
+- text mode shows both lease claims and execution attempts when they diverge (`attempts=N exec_attempts=M`).
 
 ## `run errors`
 
@@ -304,10 +447,75 @@ Purpose:
 Output:
 
 - JSON mode: array of rows with:
-- `task_id`, `input_path`, `rel_output_path`, `attempts`, `error`, `leased_by`, `lease_until`, `updated_at`
+- `task_id`, `input_path`, `rel_output_path`, `attempts`, `lease_claims`, `execution_attempts`, `last_heartbeat_at`, `error`, `leased_by`, `lease_until`, `updated_at`
 - text mode:
 - `No error tasks.` when empty
 - otherwise `<input_path>: <error message>`.
+
+## `run forensics`
+
+Purpose:
+
+- Inspect preserved failed-attempt evidence bundles for one run.
+
+Behavior:
+
+- Reads only from SQLite `task_forensics` index rows for `--run-id` (optional `--task-id` filter).
+- Does not scan telemetry CSV and does not recurse filesystem directories.
+
+Output:
+
+- JSON mode: array of rows with:
+- `forensics_id`, `source`, `run_id`, `task_id`, `pipeline_id`
+- `attempt_index`, `terminal`, `input_path`, `rel_output_path`
+- `failure_stage`, `failure_category`, `error_summary`
+- `bundle_dir`, `metadata_path`, `raw_output_path`, `created_at`
+- text mode:
+- `No forensics bundles.` when empty
+- otherwise one row per bundle with `task_id`, `attempt`, `stage`, `category`, and `bundle` path.
+
+## `run telemetry`
+
+Purpose:
+
+- Build a machine-usable telemetry report for prompt/data/schema refinement loops.
+
+Behavior:
+
+- Reads telemetry CSV from `--csv` or default `<data_dir>/codex_exec_activity.csv`.
+- Supports filters: `--run-id`, `--pipeline`, `--source`, `--status`, `--limit`.
+- Uses `list_error_tasks` when `--run-id` is provided so report includes terminal task errors that can occur after Codex subprocess success (for example local schema-gate failures).
+- Emits recommendation categories with evidence rows:
+- `prompt`
+- `input_data`
+- `output_schema`
+- `runtime`
+
+Output:
+
+- JSON mode: one report object with `summary`, `failure_patterns`, `heads_up_patterns`, `insights`, `recommendations`, `tuning_playbook`, `terminal_errors`, and `recent_rows`.
+- text mode: compact summary plus recommendation lines.
+
+## `run autotune`
+
+Purpose:
+
+- Convert telemetry tuning output into immediate caller actions (flag overrides and file diffs).
+
+Behavior:
+
+- Builds telemetry report using the same filters as `run telemetry`.
+- Resolves run/pipeline context from SQLite run metadata (`--run-id`) and pipeline assets (`farm_root` from run config or `--root` override).
+- Emits non-mutating autotune payload with:
+- `flag_overrides` (for example `--workers`, `--model`, `--reasoning-effort`)
+- `command_preview` for rerun commands
+- `prompt_template_diff` and `pipeline_config_diff` unified diff text when paths are resolvable
+- Requires at least one context selector: `--run-id` or `--pipeline`.
+
+Output:
+
+- JSON mode: one payload with schema version, context, overrides, preview command, diff blocks, and warning list.
+- text mode: compact summary, command preview, override lines, and any generated diff text.
 
 ## `worker`
 
@@ -333,16 +541,23 @@ Purpose:
 
 Behavior:
 
-- Resolves root, workspace override, and pipeline.
+- Resolves root, workspace override, optional model override, optional effort override, and pipeline.
+- Resolves optional output-schema override (`--output-schema`).
+- Optional `--incremental` enables planning-time reuse from the latest compatible prior run.
+- Optional `--incremental-from <run_id>` forces one source run and fails on incompatibility.
 - Glob selection rule:
 - if `--glob` provided and non-empty: use it.
 - if omitted/empty string: use pipeline `input_glob_default`.
 - Creates run+tasks (same internal path as `run create`).
 - Starts `N` worker threads with deterministic IDs `worker-1...worker-N`.
 - Polls status every second and prints progress.
-- If a worker hits codex rate-limit (`429` / rate-limit text), emits warning text and signals sibling workers to stop claiming new tasks.
-- Early-stop can leave tasks in `queued` state for later resume.
+- If a worker hits codex rate-limit (`429` / rate-limit text), it requeues the interrupted task, stores run-level cooldown state, and temporarily reduces effective concurrency.
+- Temporary throttling auto-recovers in the same invocation; persistent throttling eventually exits non-zero with queued work preserved for resume.
 - Collects worker exit codes and computes combined exit code.
+- If `--heads-up` is enabled, workers append matching tips to prompts and, after the run reaches terminal state, CLI performs one best-effort distillation call to learn new tips from outcomes.
+- Distiller failures are warning-only and do not change run/task status semantics.
+- `--telemetry-report/--no-telemetry-report` controls whether `process --json` includes an embedded telemetry report (enabled by default).
+- `--telemetry-limit` and `--telemetry-recommendations-limit` bound report size in `process --json`.
 
 Output contract:
 
@@ -370,6 +585,49 @@ Output contract:
   "output_dir": "absolute path",
   "farm_root": "absolute path",
   "workspace_root": "absolute path or null",
+  "codex_model": "resolved model string",
+  "codex_reasoning_effort": "resolved effort string or null",
+  "output_schema_path": "resolved schema path",
+  "heads_up_enabled": false,
+  "heads_up_max_tips": 3,
+  "heads_up_tips_applied": 0,
+  "heads_up_tips_added": 0,
+  "incremental": {
+    "enabled": true,
+    "source_run_id": "string or null",
+    "reused": 0,
+    "queued": 0,
+    "fallback_counts": {
+      "no_prior_success": 0,
+      "hash_changed": 0,
+      "source_output_missing": 0,
+      "source_output_invalid": 0
+    }
+  },
+  "telemetry_report": {
+    "schema_version": 2,
+    "matched_rows": 0,
+    "insights": {
+      "model_reasoning_breakdown": [],
+      "prompt_fingerprint_breakdown": [],
+      "input_failure_hotspots": [],
+      "reasoning_signals": {},
+      "pass_forward_effectiveness": {}
+    },
+    "recommendations": {
+      "prompt": [],
+      "input_data": [],
+      "output_schema": [],
+      "runtime": []
+    },
+    "tuning_playbook": {
+      "prompt_edits": [],
+      "input_prechecks": [],
+      "schema_edits": [],
+      "runtime_tuning": [],
+      "model_tuning": []
+    }
+  },
   "worker_exit_codes": [0, 0],
   "exit_code": 0
 }
@@ -394,7 +652,13 @@ Flow:
 - Input dir is fixed to `<data_dir>/inbox`.
 - Output dir is `<data_dir>/outbox/<pipeline_id>/<timestamp>`.
 - Timestamp format: `%Y-%m-%d_%H.%M.%S`.
+- Optional `--model` persists run-level `codex_model` override for worker execution.
+- Optional effort aliases persist run-level `codex_reasoning_effort` override for worker execution.
+- Optional `--output-schema` persists run-level `output_schema_path_override` for worker execution.
+- Optional `--heads-up`/`--heads-up-max-tips` persist run-level prompt-adaptation settings for worker execution.
+- Optional `--incremental` and `--incremental-from` persist incremental planning intent for run reproducibility.
 - Creates run and executes workers similarly to `process`.
+- When `--heads-up` is enabled and run reaches terminal status, performs one best-effort post-run learning call and prints `Heads Up tips added: <n>`.
 
 Exit codes:
 
@@ -404,12 +668,32 @@ Exit codes:
 # Non-obvious rules future AI coders should preserve
 
 - `process --json` is machine-facing; keep stdout JSON-only.
+- `lint --json` is machine-facing; keep stdout JSON-only.
 - `run create` default glob is always `"**/*.json"`, while `process` defaults to pipeline `input_glob_default` when `--glob` is omitted.
-- `process` intentionally hard-stops additional task claims on codex rate-limit (`429`) warnings to avoid amplifying API pressure.
+- `process` now uses adaptive run-level 429 handling (cooldown + reduced concurrency + recovery) instead of hard-stop-on-first-hit behavior.
 - Persisted run config must include absolute `farm_root`; include `workspace_root` only when explicitly provided.
+- Persisted run config includes `codex_model` only when the user passes `--model`; workers honor this override instead of pipeline default.
+- Persisted run config includes `codex_reasoning_effort` only when the user passes effort aliases; workers honor this override instead of pipeline default.
+- Persisted run config includes `output_schema_path_override` only when the user passes `--output-schema`; workers honor this override instead of pipeline default schema.
+- Persisted run config always includes `heads_up_enabled` and `heads_up_max_tips`; workers use those values to keep resume behavior deterministic.
+- Incremental reuse is planning-time only: workers still lease only queued/running tasks, and reused tasks start in `done`.
+- Reuse safety requires both `input_hash` equality and matching `runs.execution_fingerprint`; hash-only reuse is forbidden.
+- Heads Up post-run learning is warning-safe in both `process` and `go`; learner failures must not change run/task exit semantics.
+- Heads Up learning is terminal-run only; non-terminal `heads-up learn` calls return warning output and add zero tips.
+- `models list --json` is the machine-facing contract for external callers that need model-menu choices.
+- `run telemetry --json` is the machine-facing contract for aggregated telemetry recommendations; callers should prefer it over parsing raw CSV directly.
+- `run telemetry --json` schema version `2` includes caller-ready `insights` and `tuning_playbook` sections for automatic prompt/data/schema/runtime adjustments.
+- `run autotune --json` is non-mutating by contract; it emits patch suggestions and flag overrides but does not modify files.
+- `run forensics --json` is the machine-facing failed-attempt evidence index; callers should prefer it over directory scans.
+- `run errors --json` remains task-state introspection, while `run forensics --json` is additive artifact/evidence introspection.
 - `--workspace-root` is an override, not a fallback default.
+- Lint root handling is intentionally asymmetric:
+  - normal commands still require a fully valid pack root.
+  - `lint --root <existing-dir>` may run on near-miss roots to surface diagnostics.
 - `stats-dashboard` is read-only over telemetry input CSV and should continue writing a fully static bundle (`index.html` + `assets/` files).
+- `process --json` now includes embedded `telemetry_report` by default; it remains stdout-only JSON even with report warnings.
 - `one` handles `input_dir` and `input_file_dir` the same way (input file parent) because there is no run-wide input root.
+- `one` failure output can include an extra stderr line (`Forensics bundle: ...`) after the main failure message; this is additive and should not replace existing error text.
 - CLI should keep raising `typer.BadParameter` for bad user inputs so errors remain actionable.
 
 # How to change this chunk safely
@@ -417,6 +701,31 @@ Exit codes:
 1. If you add/rename a command or option, update tests in `tests/test_cli_integration_contracts.py` and related smoke tests.
 2. If you change any JSON shape, treat it as a contract change and update this doc plus callers/tests.
 3. If you move behavior into/out of CLI helpers, verify command output/exit behavior is unchanged unless intentionally versioning it.
+
+## Task doc merges from `docs/tasks`
+
+Historical task docs merged into this chunk to preserve caller-contract context:
+
+- `Initial-Build.md` (`2026-02-20_12.45.00` revision note):
+  - established CLI-first split between scripted `process` and interactive `go`.
+  - established local-only operation and non-interactive Codex defaults for worker safety.
+  - locked the "one input file -> one output file" batch contract and non-zero exit on terminal task errors.
+- `Plan-for-recipe-correction.md` (`2026-02-22_12.36.41`):
+  - added external pack caller contract (`--root`, `--workspace-root`, stable JSON payloads).
+  - added `run tasks` and `run errors` machine endpoints so callers do not scrape logs or SQLite.
+  - enforced machine-clean `process --json` stdout (progress on stderr).
+- `Plan-for-knowledge-correction.md` (`2026-02-22_13.07.23`):
+  - extended caller-facing config with pipeline `codex_cd_mode` and explicit workspace override precedence.
+  - refined `run errors --json` to return focused error-task rows rather than generic task rows.
+- `2026-02-28_02.47.41 - model-override-cli.md`:
+  - locked `--model` support on `one`, `run create`, `process`, and `go`.
+  - kept override persistence optional (`codex_model` only when caller explicitly passes an override).
+- `2026-02-28_02.55.22 - model-effort-overrides-for-callers.md`:
+  - locked effort alias vocabulary and normalized value domain.
+  - persisted `codex_reasoning_effort` only when explicitly set so queued runs remain deterministic without altering default pipeline behavior.
+- `2026-02-28_04.16.54 - caller-model-menu-contract.md`:
+  - added `models list --json` as the stable caller model-picker contract.
+  - locked deterministic fallback row when Codex cache metadata is missing.
 
 ## Merged discoveries from `docs/understandings`
 
@@ -426,8 +735,18 @@ Chronological details that were previously split across short exploration notes:
 - `2026-02-22_14.34.46`: `run create` and `process` intentionally use different glob-default semantics. `run create` defaults to `"**/*.json"` while `process` falls back to the pipeline's `input_glob_default` when `--glob` is omitted/empty.
 - `2026-02-22_14.34.46`: Run config persistence is part of the CLI contract. `farm_root` is always persisted as an absolute path; `workspace_root` is persisted only when explicitly provided.
 - `2026-02-22_14.34.46`: In `one`, `codex_cd_mode=input_dir` and `input_file_dir` intentionally collapse to the same directory (`Path(--in).parent`) because no run-wide input root exists.
+- `2026-02-28_02.47.41`: `--model` is a run-level override for `one`, `run create`, `process`, and `go`; queued runs persist `codex_model` in `config_json` so worker execution stays deterministic across resumes.
+- `2026-02-28_02.55.22`: effort aliases (`--effort|--reasoning-effort|--thinking-effort` and codex-prefixed forms) map to Codex `model_reasoning_effort`; run-based flows persist `codex_reasoning_effort` so worker/resume behavior stays deterministic.
+- `2026-02-28_09.31.02`: caller-supplied `--output-schema` is a run-level validation-contract override for `one`, `run create`, `process`, and `go`; run-based flows persist `output_schema_path_override`, and JSON payloads expose resolved `output_schema_path`.
+- `2026-02-28_09.33.49`: Heads Up adaptation is an explicit opt-in contract (`--heads-up`). Run-based flows persist `heads_up_enabled` and `heads_up_max_tips`; worker prompt injection and post-run learning remain warning-safe and deterministic across resumes.
+- `2026-02-28_09.58.11`: Heads Up learning safety applies to both `process --heads-up` and `go --heads-up`; non-terminal learn calls stay warning-only with zero added tips so run/task exit semantics remain tied to worker outcomes.
+- `2026-02-28_04.16.54`: `models list` is the caller contract for model-picker menus; it sources visible Codex cache rows and emits a stable fallback (`gpt-5.3-codex-spark`) when local cache metadata is absent.
+- `2026-02-28_12.34.52`: run lifecycle control is now explicit in CLI contracts: `run pause`, `run resume`, `run cancel`, and `run retry-errors` exist; `run status --json` and `process --json` include `control_state` plus `counts.canceled`; and `run tasks --status canceled` is supported.
+- `2026-02-28_13.43.43`: `_run_workers(...)` switched from unconditional `time.sleep(poll_seconds)` loops to `concurrent.futures.wait(..., return_when=FIRST_COMPLETED)` so progress polling stays periodic but finishes immediately when work is already done.
+- `2026-02-28_18.46.00`: failure-forensics inspection is a separate caller contract (`run forensics --json`) keyed by the `task_forensics` index; existing `run errors --json` payload fields remain unchanged.
 
 Known rough edges to preserve context:
 
 - When stdout cleanliness breaks in `process --json`, downstream automation fails fast with JSON parse errors even if core processing still works.
 - Seemingly harmless "unification" of glob defaults across commands changes user-visible behavior and has broken expectations before.
+- Reverting worker orchestration to unconditional poll sleeps reintroduces synthetic latency that hides real performance regressions in `process`/`go` tests.

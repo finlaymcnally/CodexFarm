@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 var/
+var/oracle/
 recipeimport/data/output/
 *.sqlite3
 *.sqlite3-shm
@@ -10,3 +11,9 @@ recipeimport/data/output/
 
 # local codex outputs
 *.normalized.json
+
+# local browser/profile dumps (can contain secrets/tokens)
+*browser-profile/**
+**/Code\ Cache/**
+**/.org.chromium.Chromium.*
+\\\\wsl.localhost*

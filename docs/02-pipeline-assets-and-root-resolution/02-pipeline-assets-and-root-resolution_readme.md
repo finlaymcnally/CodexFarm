@@ -17,6 +17,7 @@ If this layer resolves the wrong root, loads the wrong pack, or accepts a bad pi
 - Validating each `pipelines/*.json` file against allowed fields and defaults.
 - Resolving prompt/schema paths from repo-relative strings to absolute filesystem paths.
 - Enforcing pipeline ID uniqueness.
+- Read-only pack/schema lint scans (`codex-farm lint`) that reuse the same pipeline/schema path rules without fail-fast runtime exits.
 - Resolving and validating optional workspace override paths.
 - Persisting root/workspace decisions into run config so resumed workers behave consistently.
 
@@ -40,12 +41,18 @@ CLI command
 - `src/codex_farm/pipeline_spec.py`
   - On-disk pipeline schema (`PipelineSpecModel`)
   - Runtime immutable spec (`PipelineSpec`)
+  - Pipeline source-file provenance (`PipelineSpec.source_path`) used for run-asset freezing
+  - Reusable single-file parsing (`parse_pipeline_model_file`)
   - Repo-relative asset resolution + existence checks
   - Prompt template substitution (`{{INPUT_PATH}}`)
+- `src/codex_farm/pack_lint.py`
+  - Read-only pack and schema lint orchestration
+  - Finding-code classification (`error` vs `warning`)
+  - Near-miss root diagnostics for explicit `lint --root` paths
 - `src/codex_farm/cli.py`
   - Root/workspace option validation wrappers
   - Pipeline lookup and user-facing failures
-  - Run config persistence (`farm_root`, optional `workspace_root`)
+  - Run config persistence (`farm_root`, optional `workspace_root`, optional model/effort overrides)
 - `src/codex_farm/worker.py`
   - Re-resolves `farm_root` from persisted run config first
   - Re-resolves `workspace_root` override from persisted config
@@ -68,6 +75,12 @@ Resolution precedence is strict:
 If a candidate root exists but misses required folders, it fails immediately with a `FileNotFoundError` naming missing folders.
 
 If no root can be found at all, it fails with guidance to pass `--root` or set `CODEX_FARM_ROOT`.
+
+Lint exception:
+
+- `lint --root <path>` does not call `resolve_farm_root(...)` when `--root` is explicitly provided.
+- If that directory exists but is missing sentinels, lint reports `pack.missing_sentinel_dirs` as a finding so users can debug near-miss packs in one pass.
+- Lint still reuses pipeline/schema validation seams (`parse_pipeline_model_file(...)`, repo-relative path checks) and then maps failures to finding codes, so lint diagnostics stay aligned with runtime validation without fail-fast CLI argument exits.
 
 ### Why this matters
 
@@ -97,6 +110,7 @@ Each JSON file is parsed through `PipelineSpecModel`:
   - `codex_sandbox`: `"read-only"`
   - `codex_ask_for_approval`: `"never"`
   - `codex_web_search`: `"disabled"`
+  - `codex_reasoning_effort`: `null` (optional; allowed: `none|minimal|low|medium|high|xhigh`)
   - `codex_timeout_seconds`: `180` (minimum `1`)
   - `codex_cd_mode`: `"asset_root"` with allowed values:
     - `"asset_root"`
@@ -111,6 +125,8 @@ All validation/load errors are re-raised as:
 
 - `ValueError("Invalid pipeline file <path>: <details>")`
 
+Lint reuses the same field validation via `parse_pipeline_model_file(...)`, then separately classifies missing prompt/schema assets and outside-pack path escapes as explicit finding codes.
+
 ## Prompt template rendering contract
 
 `render_prompt_template(template_path, input_path)` does one substitution only:
@@ -118,6 +134,12 @@ All validation/load errors are re-raised as:
 - Replaces every `{{INPUT_PATH}}` literal with the absolute resolved input file path.
 
 There is no general template engine. If you need more placeholders, code changes are required.
+
+Prompt-adjustment extension rule:
+
+- Keep this function as the deterministic template baseline.
+- Persist adaptive prompt toggles in `runs.config_json` and apply run-specific hint layering at worker execution time.
+- Do not encode prompt-adaptation state in task rows; queue shape should stay stable.
 
 ## Workspace override and cd-mode rules
 
@@ -153,6 +175,9 @@ Workers later prefer persisted config over worker CLI defaults:
 
 - persisted `farm_root` wins
 - persisted `workspace_root` wins when present
+- persisted `codex_model` / `codex_reasoning_effort` win when present
+- persisted `output_schema_path_override` wins when present
+- persisted `frozen_assets` (when present) tells workers to use frozen prompt/schema/pipeline files from `<data_dir>/run_assets/<run_id>/` instead of reopening live pack files
 
 This prevents resumed tasks from silently switching pipeline packs or cd behavior.
 
@@ -178,9 +203,12 @@ This prevents resumed tasks from silently switching pipeline packs or cd behavio
   - invalid root/env rejection
 - `tests/test_pipeline_spec.py`
   - pipeline loading, prompt substitution, cd-mode validation
+- `tests/test_pack_lint.py`
+  - pack/schema lint findings for missing assets, duplicate IDs, invalid schema JSON/definition, and compatibility warnings
 - `tests/test_cli_integration_contracts.py`
   - `pipelines list --root` precedence
   - `process --workspace-root` JSON contract and cd behavior
+  - `lint --json` contracts for clean packs, broken packs, schema mode, and near-miss roots
 - `tests/test_worker.py`
   - worker cd selection for each `codex_cd_mode`
   - persisted workspace override wins in worker flow
@@ -206,11 +234,35 @@ This prevents resumed tasks from silently switching pipeline packs or cd behavio
 - If changing root precedence:
   - update `resolve_farm_root`
   - add tests in `tests/test_paths.py` and CLI integration coverage
-  - update `docs/IMPORTANT CONVENTIONS.md`
+  - update docs for this boundary (`docs/02-..._readme.md`) and adjacent runtime boundaries (`docs/03-..._readme.md`, `docs/04-..._readme.md`) if resume/runtime behavior changes
 - If changing `codex_cd_mode` semantics:
   - update CLI one-file resolver and worker resolver together
   - update tests in `tests/test_worker.py`
   - update chunk docs 02 and 04 so they stay aligned
+
+## Task doc merges from `docs/tasks`
+
+Historical task docs merged into this chunk to preserve root/asset decision context:
+
+- `Initial-Build.md` (`2026-02-20_12.45.00` revision note):
+  - set the foundational rule that pipeline behavior is data-driven via `pipelines/*.json`, prompt templates, and schemas, not hard-coded orchestration classes.
+  - documented strict schema/prompt file coupling as part of pipeline integrity.
+- `Plan-for-recipe-correction.md` (`2026-02-22_12.36.41`):
+  - introduced explicit root precedence (`--root` > `CODEX_FARM_ROOT` > discovery) for external pipeline packs.
+  - introduced persisted run roots (`farm_root`, optional `workspace_root`) so resumed workers do not drift with caller cwd/env.
+  - codified `process --json` external-caller usage where root/workspace selections must remain reproducible.
+- `Plan-for-knowledge-correction.md` (`2026-02-22_13.07.23`):
+  - added pipeline `codex_cd_mode` (`asset_root`, `input_dir`, `input_file_dir`) and enforced explicit override precedence for `--workspace-root`.
+  - locked terminal behavior for missing computed `--cd` directories (configuration errors are not retried).
+  - reinforced deterministic fake-Codex integration coverage for root/cd semantics.
+- `idea1-2.md` (`2026-02-28_13.20.00`):
+  - added run-assets freezing at run creation (`<data_dir>/run_assets/<run_id>/`) for pipeline JSON, effective pipeline contract, prompt template, and schema.
+  - documented snapshot-first worker expectation for snapshot-bearing runs and explicit no-live-fallback behavior on missing/corrupt snapshot data.
+  - captured scope boundary: this freeze contract does not freeze input files or guarantee `farm_root`/workspace availability at execution time.
+- `idea1-7.md` (`2026-02-28_18.32.00`):
+  - added read-only pack/schema lint contract (`codex-farm lint`) with deterministic finding codes and strict JSON output shape.
+  - locked near-miss root rule: explicit `lint --root <existing-dir>` must report sentinel-folder findings instead of failing argument parsing.
+  - preserved compatibility rule that missing Heads Up distiller assets are warning-only, and lint remains offline/local (no network `$ref` fetch).
 
 ## Merged discoveries from `docs/understandings`
 
@@ -223,6 +275,11 @@ These points were originally captured as separate timestamped exploration notes 
 - `2026-02-22_13.30.00`: Missing computed `--cd` directory is terminal configuration error, not retryable runtime noise.
 - `2026-02-22_14.34.00`: Root validation must require sentinel directories (`pipelines/`, `prompts/`, `schemas/`) and use precedence `--root` > `CODEX_FARM_ROOT` > auto-discovery.
 - `2026-02-22_14.34.00`: Pipeline JSON validation (`PipelineSpecModel`, `extra=forbid`) plus repo-relative asset existence checks are the critical guard before tasks are queued.
+- `2026-02-28_02.55.22`: Pipeline assets may set optional `codex_reasoning_effort`; CLI run overrides persist as optional run-config keys (`codex_model`, `codex_reasoning_effort`) so worker resume behavior stays deterministic.
+- `2026-02-28_09.31.02`: Caller programs may set `--output-schema`; run-based flows persist optional `output_schema_path_override` so worker resume and retries keep the same validation contract.
+- `2026-02-28_09.32.28`: Prompt-adaptation work should layer run-config state plus worker-time rendering; keep `render_prompt_template(...)` deterministic and avoid task-schema expansion.
+- `2026-02-28_12.30.33`: Lint root handling is intentionally asymmetric: execution commands require fully valid pack roots, but explicit `lint --root` near-miss directories should surface accumulated finding codes (including sentinel misses) instead of short-circuiting with argument failures.
+- `2026-02-28_12.30.33`: To avoid drift, lint diagnostics should keep reusing pipeline parsing/root-relative helpers and only translate resulting failures into lint severities/codes.
 
 Known bad paths to avoid repeating:
 

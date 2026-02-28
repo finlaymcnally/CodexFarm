@@ -1,10 +1,16 @@
 import csv
+import hashlib
+import json
 from pathlib import Path
 import subprocess
 
 import pytest
 
-from codex_farm.codex_exec import CodexExecTimeoutError, run_codex_exec
+from codex_farm.codex_exec import (
+    CodexExecTimeoutError,
+    extract_retry_after_seconds,
+    run_codex_exec,
+)
 
 
 def _read_rows(path: Path) -> list[dict[str, str]]:
@@ -51,6 +57,20 @@ def test_run_codex_exec_logs_usage_from_jsonl_stdout(monkeypatch, tmp_path: Path
             "task_id": "task-1",
             "worker_id": "worker-1",
             "input_path": "/tmp/input.json",
+            "heads_up_applied": True,
+            "heads_up_tip_count": 2,
+            "heads_up_input_signature": "json_obj_keys:name,recipeIngredient",
+            "heads_up_tip_ids_json": ["tip-1", "tip-2"],
+            "heads_up_tip_texts_json": [
+                "Return raw JSON only.",
+                "Use HowToStep objects for recipeInstructions.",
+            ],
+            "heads_up_tip_scores_json": [0.8, 0.6],
+            "attempt_index": 2,
+            "lease_claim_index": 2,
+            "execution_attempt_index": 2,
+            "retry_context_applied": True,
+            "retry_previous_error": "Schema validation failed at recipeInstructions[0].text",
         },
     )
 
@@ -75,6 +95,72 @@ def test_run_codex_exec_logs_usage_from_jsonl_stdout(monkeypatch, tmp_path: Path
     assert row["input_path"] == "/tmp/input.json"
     assert row["prompt_text"] == "INPUT=/tmp/input.json\nReturn JSON."
     assert row["stdout_tail"] == "non-json-warning line"
+    assert row["output_sha256"] == hashlib.sha256(b'{"ok":"OK"}').hexdigest()
+    assert row["output_preview"] == '{"ok":"OK"}'
+    assert row["output_preview_truncated"] == "false"
+    assert row["codex_event_count"] == "2"
+    assert json.loads(row["codex_event_types_json"]) == ["thread.started", "turn.completed"]
+    assert row["heads_up_tip_count"] == "2"
+    assert json.loads(row["heads_up_tip_ids_json"]) == ["tip-1", "tip-2"]
+    assert json.loads(row["heads_up_tip_texts_json"]) == [
+        "Return raw JSON only.",
+        "Use HowToStep objects for recipeInstructions.",
+    ]
+    assert json.loads(row["heads_up_tip_scores_json"]) == [0.8, 0.6]
+    assert row["attempt_index"] == "2"
+    assert row["lease_claim_index"] == "2"
+    assert row["execution_attempt_index"] == "2"
+    assert row["retry_context_applied"] == "true"
+    assert row["retry_previous_error"] == "Schema validation failed at recipeInstructions[0].text"
+    assert row["retry_previous_error_chars"] == "54"
+    assert row["retry_previous_error_sha256"]
+    assert row["failure_category"] == ""
+    assert row["rate_limit_suspected"] == "false"
+
+
+def test_run_codex_exec_logs_logical_schema_path_when_provided(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "out.json"
+    frozen_schema_path = tmp_path / "frozen.schema.json"
+    logical_schema_path = tmp_path / "logical.schema.json"
+    log_path = tmp_path / "codex_exec_activity.csv"
+    frozen_schema_path.write_text("{}", encoding="utf-8")
+    logical_schema_path.write_text("{}", encoding="utf-8")
+
+    captured_cmd: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        nonlocal captured_cmd
+        captured_cmd = list(cmd)
+        temp_output = Path(cmd[cmd.index("--output-last-message") + 1])
+        temp_output.write_text('{"ok":"OK"}', encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_codex_exec(
+        cd_dir=tmp_path,
+        prompt="Return JSON.",
+        model="gpt-5.3-codex-spark",
+        sandbox="read-only",
+        ask_for_approval="never",
+        web_search="disabled",
+        output_schema=frozen_schema_path,
+        output_schema_logical_path=logical_schema_path,
+        output_path=output_path,
+        timeout_seconds=30,
+        usage_log_csv=log_path,
+    )
+
+    assert result.ok is True
+    assert str(frozen_schema_path.resolve()) in captured_cmd
+
+    rows = _read_rows(log_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["output_schema_path"] == str(logical_schema_path.resolve())
 
 
 def test_run_codex_exec_logs_timeout_and_raises(monkeypatch, tmp_path: Path) -> None:
@@ -115,6 +201,8 @@ def test_run_codex_exec_logs_timeout_and_raises(monkeypatch, tmp_path: Path) -> 
     assert row["exit_code"] == ""
     assert row["source"] == "one"
     assert row["output_payload_present"] == "false"
+    assert row["failure_category"] == "timeout"
+    assert row["rate_limit_suspected"] == "false"
 
 
 def test_run_codex_exec_accepts_nonzero_exit_with_payload_and_logs_it(
@@ -155,3 +243,90 @@ def test_run_codex_exec_accepts_nonzero_exit_with_payload_and_logs_it(
     assert row["status"] == "ok"
     assert row["accepted_nonzero_exit"] == "true"
     assert row["exit_code"] == "1"
+    assert row["failure_category"] == "accepted_nonzero_exit"
+
+
+def test_run_codex_exec_logs_failed_category_and_rate_limit_signal(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "out.json"
+    schema_path = tmp_path / "schema.json"
+    log_path = tmp_path / "codex_exec_activity.csv"
+    schema_path.write_text("{}", encoding="utf-8")
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd,
+            1,
+            stdout='{"type":"thread.started","thread_id":"thread-rate-limit"}',
+            stderr="HTTP 429 Too Many Requests",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_codex_exec(
+        cd_dir=tmp_path,
+        prompt="Return JSON.",
+        model="gpt-5.3-codex-spark",
+        sandbox="read-only",
+        ask_for_approval="never",
+        web_search="disabled",
+        output_schema=schema_path,
+        output_path=output_path,
+        timeout_seconds=30,
+        usage_log_csv=log_path,
+    )
+
+    assert result.ok is False
+    rows = _read_rows(log_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["status"] == "failed"
+    assert row["failure_category"] == "nonzero_exit_no_payload"
+    assert row["rate_limit_suspected"] == "true"
+
+
+def test_run_codex_exec_passes_reasoning_effort_config(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "out.json"
+    schema_path = tmp_path / "schema.json"
+    schema_path.write_text("{}", encoding="utf-8")
+
+    captured_cmd: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        nonlocal captured_cmd
+        captured_cmd = list(cmd)
+        temp_output = Path(cmd[cmd.index("--output-last-message") + 1])
+        temp_output.write_text('{"ok":"OK"}', encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_codex_exec(
+        cd_dir=tmp_path,
+        prompt="Return JSON.",
+        model="gpt-5.3-codex-spark",
+        sandbox="read-only",
+        ask_for_approval="never",
+        web_search="disabled",
+        reasoning_effort="high",
+        output_schema=schema_path,
+        output_path=output_path,
+        timeout_seconds=30,
+    )
+
+    assert result.ok is True
+    assert "--config" in captured_cmd
+    assert 'model_reasoning_effort="high"' in captured_cmd
+
+
+def test_extract_retry_after_seconds_parses_seconds_hint() -> None:
+    assert extract_retry_after_seconds("HTTP 429 retry after 12 seconds") == 12
+
+
+def test_extract_retry_after_seconds_parses_minutes_hint() -> None:
+    assert extract_retry_after_seconds("Too many requests. Try again in 2 minutes.") == 120

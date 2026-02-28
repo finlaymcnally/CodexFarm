@@ -1,0 +1,21 @@
+You are generating reusable prompt guardrails for codex-farm pipeline runs.
+
+Pipeline ID:
+{{PIPELINE_ID}}
+
+Pipeline prompt template:
+{{PIPELINE_PROMPT}}
+
+Observed run outcomes grouped by input signature (JSON):
+{{OBSERVATIONS_JSON}}
+
+Task:
+Generate concise, actionable Heads Up tips that improve reliability for future runs of the same pipeline.
+
+Requirements:
+- Return JSON only that matches the provided output schema.
+- For each tip, set `input_signature` to one of the observed signatures or `*` for a general tip.
+- Keep `tip_text` under 140 characters.
+- Prefer concrete instructions tied to observed failures.
+- Avoid duplicate wording.
+- Do not include markdown.

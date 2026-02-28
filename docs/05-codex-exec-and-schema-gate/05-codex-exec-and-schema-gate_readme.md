@@ -39,13 +39,16 @@ If you change behavior here, you are changing success/failure semantics across b
 Input to this chunk:
 
 - A rendered prompt string.
-- Pipeline runtime settings (`model`, `sandbox`, `ask_for_approval`, `web_search`, timeout).
+- Runtime settings (`model`, `sandbox`, `ask_for_approval`, `web_search`, `reasoning_effort`, timeout) resolved by caller.
+- Model is pipeline default unless caller applies a run/command override.
+- Reasoning effort is pipeline default unless caller applies a run/command override.
 - Resolved paths (`cd_dir`, `output_schema`, `output_path`).
 
 Output from this chunk:
 
-- `CodexExecResult` (`ok`, `exit_code`, `stderr_tail`) or timeout exception.
+- `CodexExecResult` (`ok`, `exit_code`, `stderr_tail`, `stdout_tail`) or timeout exception.
 - `is_rate_limit_message(...)` helper for classifying stderr/stdout tails that indicate API rate limiting (`429`/rate-limit text).
+- `extract_retry_after_seconds(...)` helper for parsing explicit provider retry hints used by adaptive worker cooldown policy.
 - Parsed JSON payload on schema success.
 - `SchemaValidationError` on JSON/schema failure.
 
@@ -62,9 +65,10 @@ Downstream behavior:
 codex --ask-for-approval <mode> exec \
   --cd <absolute dir> \
   --skip-git-repo-check \
-  --model <pipeline model> \
+  --model <resolved model> \
   --sandbox <pipeline sandbox> \
   --config web_search=<pipeline web_search> \
+  [--config model_reasoning_effort="<resolved effort>"] \
   --output-schema <absolute schema path> \
   --output-last-message <temp output path> \
   --json \
@@ -77,8 +81,9 @@ Important details:
 - `--skip-git-repo-check` is always enabled to support non-git working dirs.
 - Output is directed to a temp file in the final output directory.
 - On accepted output, `os.replace(temp, final)` gives atomic replace semantics.
-- Only stderr tail (up to 20 lines) is retained for user/task error reporting.
+- Both stderr and stdout passthrough tails (up to 20 lines each) are returned to callers for failure diagnostics.
 - A usage CSV row is appended per Codex call (`codex_exec_activity.csv`) with timing, token usage (from `turn.completed.usage`), prompt text, exit data, and optional run/task context.
+- Telemetry rows also include parsed event types/counts, output payload fingerprint/preview, normalized failure categories, and structured pass-forward context (retry error carry-forward and applied Heads Up tips) for caller-side prompt tuning.
 
 ## 2) Output acceptance rules (`codex_exec.py`)
 
@@ -86,7 +91,7 @@ Important details:
 
 Current decision logic:
 
-1. Timeout: raise `CodexExecTimeoutError("codex exec timed out after <N>s")` and remove temp file if present.
+1. Timeout: raise `CodexExecTimeoutError("codex exec timed out after <N>s")`, attach stdout/stderr tails, and remove temp file if present.
 2. Non-zero exit and no non-empty output payload: return `CodexExecResult(ok=False, exit_code=<code>, stderr_tail=<tail>)`.
 3. Any exit code, but temp output exists and is non-empty: accept payload, atomically move temp file to final path, return `CodexExecResult(ok=True, exit_code=<code>, stderr_tail=<tail>)`.
 4. Exit 0 with no non-empty output payload: return `ok=False` with message `codex exec exited 0 but produced no output file`.
@@ -140,16 +145,38 @@ This avoids false failures when Codex prints expected output but exits non-zero 
 
 - Calls `run_codex_exec`.
 - If timeout or `result.ok == False`: exits with error.
-- If schema validation fails: deletes output file, exits with error.
+- If timeout/codex/schema failure occurs: captures best-effort forensics bundle, then exits with error.
+- If schema validation fails: deletes output file after capture, then exits with error.
 
 `worker_loop` path:
 
 - Calls `run_codex_exec`.
+- Resolves model from run config `codex_model` when present, else pipeline `codex_model`.
+- Resolves effort from run config `codex_reasoning_effort` when present, else pipeline `codex_reasoning_effort`.
+- Resolves output schema from run config `output_schema_path_override` when present, else pipeline `output_schema_path`.
+- For snapshot-bearing runs, worker instead uses frozen execution files from run-assets snapshot (`prompt.template.txt`, `output.schema.json`, and frozen pipeline settings).
 - Converts `result.ok == False` into `RuntimeError`.
 - Runs local schema validation.
 - On failure (`timeout`, `SchemaValidationError`, `RuntimeError`):
-  - deletes output path
+  - captures best-effort forensics first (when caller supplies context)
+  - deletes staged output path
   - requeues or marks terminal error (Chunk 04 owns retry policy)
+
+Telemetry schema identity rule:
+
+- `run_codex_exec(...)` now accepts both execution schema path and optional logical schema path.
+- Worker passes frozen schema file for execution/validation while telemetry `output_schema_path` preserves logical source schema identity when available.
+
+## 5.1) Verification visibility surfaces
+
+When acceptance behavior changes, keep these caller-facing inspection surfaces aligned:
+
+- `run tasks --json`
+- `run errors --json`
+- `run forensics --json`
+- `codex_exec_activity.csv`
+
+Together they are the practical debugging contract for why outputs were accepted, retried, or marked terminal.
 
 ## 6) Known non-obvious rules
 
@@ -158,6 +185,12 @@ This avoids false failures when Codex prints expected output but exits non-zero 
 - Keep `--skip-git-repo-check` in worker and doctor calls.
 - A non-zero Codex exit can still produce an accepted payload.
 - Task success in worker mode requires both: accepted payload file and local schema pass.
+- Timeout cleanup removes temp output before caller retry logic; timeout raw payload retention is therefore metadata/tail-based unless codex-exec timeout behavior changes.
+- Run-level model overrides are resolved in CLI/worker before this chunk; `run_codex_exec` should keep treating `model` as the final resolved value.
+- Run-level effort overrides are resolved in CLI/worker before this chunk; `run_codex_exec` should keep treating `reasoning_effort` as the final resolved value.
+- Run-level schema overrides are resolved in CLI/worker before this chunk; `run_codex_exec` should keep treating `output_schema` as the final resolved path.
+- `recipe.schemaorg.normalize.v1` output contract requires `recipeInstructions` as an array of `{"@type":"HowToStep","text":...}` objects.
+- `schemas/recipeimport_intermediate_fullshape_v1.schema.json` and `schemas/recipeimport_final_fullshape_v1.schema.json` are inbound acceptance contracts and must validate both sparse real samples and platonic full-shape fixtures under `examples/recipeimport_*`.
 
 ## 7) If you edit this chunk
 
@@ -180,11 +213,22 @@ Common regressions to watch for:
 - Marking model output "good" without local schema pass.
 - Losing useful stderr context needed in task error rows.
 
+## Task doc merges from `docs/tasks`
+
+Historical task docs merged into this chunk to preserve codex-exec/schema-gate evidence decisions:
+
+- `idea1-6.md` (`2026-02-28_18.46.00`):
+  - added self-contained failed-attempt forensics bundles that snapshot prompt/input/schema plus runtime tails and optional rejected payload bytes.
+  - locked capture ordering contract: for schema/runtime failures, capture evidence before staged/normal output cleanup so normal output directories remain clean while debugging artifacts survive.
+  - preserved compatibility rule that `run forensics --json` is additive and `run errors --json` remains unchanged task-state introspection.
+  - captured key limit from task history: timeout branches remain metadata/tail-based for raw payload because codex timeout cleanup currently removes temp output before capture.
+
 ## See also
 
 - `docs/04-worker-execution-and-retries/04-worker-execution-and-retries_readme.md`
 - `docs/06-integration-contracts-and-fixtures/06-integration-contracts-and-fixtures_readme.md`
-- `docs/IMPORTANT CONVENTIONS.md`
+- `docs/08-external-program-reference/structured-output-contracts.md`
+- `docs/08-external-program-reference/failure-forensics-contracts.md`
 
 ## Merged discoveries from `docs/understandings`
 
@@ -197,6 +241,12 @@ Historical discoveries that now belong in this chunk:
 - `2026-02-20_13.09.19`: Recipeimport schema contracts were realigned to accept both sparse real payloads and platonic full-shape fixtures; the old over-required fullshape contract caused false failures.
 - `2026-02-20_13.09.19`: `schemas/recipeimport_final_fullshape_v1.schema.json` now tracks canonical shape from `examples/recipeimport_final/recipeDraftV1.canonical.recipeimport.schema.json`.
 - `2026-02-22_14.33.40`: Chunk 05 is an acceptance boundary: temp-file write + atomic promote + schema gate is intentional and should not be bypassed by subprocess exit code shortcuts.
+- `2026-02-28_09.21.54`: Output verification is layered: `run_codex_exec(...)` must produce a non-empty payload, then local Draft 2020-12 validation must pass; task success requires both.
+- `2026-02-28_09.21.54`: Non-zero Codex exits remain conditionally acceptable only when payload exists and local schema validation passes.
+- `2026-02-28_09.21.54`: Regression coverage for this stack spans `test_codex_exec.py`, `test_worker.py`, `test_fake_codex_pipeline_pack_demo.py`, `test_cli_integration_contracts.py`, and `test_recipeimport_schemas.py`.
+- `2026-02-28_09.31.02`: Validation schema source is run-config aware: optional `output_schema_path_override` in run config can override pipeline schema path, and both Codex `--output-schema` and local Draft202012 validation use the resolved path.
+- `2026-02-28_14.50.39`: `run_codex_exec` telemetry now carries structured caller-tuning signals (retry carry-forward text, applied Heads Up hints, failure category/rate-limit flags, and output previews) so external programs can diagnose repeated failure modes without parsing prompt bodies.
+- `2026-02-28_18.46.00`: `CodexExecResult`/timeout errors expose both stdout and stderr tails so worker/CLI failure forensics can capture the same operator-visible diagnostics as telemetry without scraping CSV.
 
 Known fragile areas:
 
