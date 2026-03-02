@@ -295,3 +295,41 @@ Known bad paths to avoid repeating:
 
 - Allowing implicit workspace defaults made resume behavior drift across shells and caused hard-to-reproduce `--cd` bugs.
 - Letting workers recompute roots from ambient cwd instead of persisted run config caused external pipeline-pack runs to pick the wrong assets.
+
+## Merged understanding notes (`docs/understandings`)
+
+### 2026-03-02_16.00.00 - Duplicate `prompt_input_mode` key regression in benchmark prompt asset
+- Found a temporary duplicate JSON key in `pipelines/recipeimport.benchmark.line_label.v1.json`: both `"prompt_input_mode": "inline"` and later `"prompt_input_mode": "path"`.
+- JSON parser behavior keeps the last duplicate value, which effectively forced `path` mode and broke intended inline behavior during inline-migration checks.
+- Resolution is to remove the duplicate and keep a single `prompt_input_mode` to preserve lint/runtime expectations for migrated inline benchmark pipelines.
+
+## Task-driven context: inline prompt payload mode (`docs/tasks/2026-03-02_08.18.23`)
+
+Why this work exists:
+
+- External callers needed prompt payloads to be self-contained so model tasks do not rely on file-path-based reads.
+- This makes a single task input source available in the rendered prompt body for robust orchestration.
+
+Current design and why:
+
+- `render_prompt_template(template_path, input_path)` now substitutes both `{{INPUT_PATH}}` and `{{INPUT_TEXT}}`.
+- Pipeline JSON supports `prompt_input_mode` with default `path`; `inline` is explicit and opt-in.
+- `pack_lint.py` validates required placeholder mode:
+  - `path` requires `{{INPUT_PATH}}`
+  - `inline` requires `{{INPUT_TEXT}}`
+- Backward compatibility for legacy packs is preserved by keeping `{{INPUT_PATH}}` behavior intact while adding inline support.
+
+How it is implemented:
+
+- Runtime rendering is in `src/codex_farm/pipeline_spec.py`.
+- Lint enforcement is in `src/codex_farm/pack_lint.py`.
+- Most contract tests are in `tests/test_pipeline_spec.py` and `tests/test_pack_lint.py`; worker-level inline-proofing is in `tests/test_worker.py`.
+- Migrated prompt templates live in:
+  - `prompts/recipe_schemaorg_normalize_v1.txt`
+  - `prompts/recipe_schemaorg_to_proprietary_v1.txt`
+  - `prompts/recipeimport_benchmark_line_label_v1.txt`
+
+Known issues / avoid-list:
+
+- JSON key collisions in pipeline assets (for example duplicated `prompt_input_mode`) can silently produce wrong mode behavior due to overwrite order.
+- For this reason, pipeline JSON mode entries should be single-source and reviewed during migration to avoid ambiguous renders.

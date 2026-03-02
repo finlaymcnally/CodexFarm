@@ -823,3 +823,15 @@ Known rough edges to preserve context:
 - When stdout cleanliness breaks in `process --json`, downstream automation fails fast with JSON parse errors even if core processing still works.
 - Seemingly harmless "unification" of glob defaults across commands changes user-visible behavior and has broken expectations before.
 - Reverting worker orchestration to unconditional poll sleeps reintroduces synthetic latency that hides real performance regressions in `process`/`go` tests.
+
+## Merged understanding notes (`docs/understandings`)
+
+### 2026-03-02_00.45.47 - Auth context is inherited; service callers must preserve Codex home
+- `run_codex_exec` uses inherited process environment for Codex credentials; callers that run under a different user/home must explicitly set `CODEX_HOME` or `HOME` to the profile where `codex login` was completed.
+- `codex-farm doctor` validates both CLI availability and a non-interactive smoke execution path so integrators get fast feedback before starting queueing work.
+- For external orchestrators: align Codex credential context before running `doctor`, `process`, `go`, or `worker`.
+
+### 2026-03-02_00.52.58 - Login preflight before queueing/starting execution
+- Missing Codex login used to fail later in worker attempts with noisy retry churn.
+- Execution entrypoints now preflight via `codex login status` by default before run creation or worker leasing on `one`, `worker`, `process`, and `go`.
+- Explicit bypass controls: `--no-login-precheck` / `CODEX_FARM_SKIP_LOGIN_PRECHECK=1` for intentional non-interactive environments.

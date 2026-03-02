@@ -308,3 +308,29 @@ Known bad path to avoid:
 
 - Interpreting `attempts` as "number of completed runs" causes retry-budget math bugs; in this system `attempts` means "number of lease claims."
 - Treating heartbeat as a complete stale-safety fix while still writing directly to canonical output paths leaves stale-owner delete races unresolved.
+
+## Merged understanding notes (`docs/understandings`)
+
+### 2026-03-02_18.20.00 - Benchmark calibration before schema gate
+- In benchmark mode, schema checks must happen after line-label alignment/calibration.
+- Ordering changed from: parse -> schema validate -> align to: parse -> align/surface -> calibrate -> schema validate.
+- This prevents immediate rejection from recoverable shape issues (e.g., confidence bounds) before deterministic calibration, while retaining strict checks for irrecoverable structural violations.
+
+### 2026-03-02_16.51.40 - Benchmark terminal handling and coverage semantics
+- `SchemaValidationError` in benchmark mode is now mapped to `benchmark_contract_error` and treated terminal (no retry burn).
+- `alignment_coverage` measures observed coverage from raw model predictions intersecting canonical labels, not filled post-processing cardinality.
+- This keeps reported coverage meaningful while allowing deterministic artifact generation logic to stay separate.
+
+### 2026-03-02_10.18.00 - Safe benchmark hook points in worker loop
+- Benchmark parsing is done from staged output after local schema validation.
+- `prepare_line_label_benchmark_artifacts` runs before staged-output promotion; `write_line_label_benchmark_artifacts` runs after successful lease-checked promotion.
+- This avoids stale-owner artifacts and preserves retry/terminal semantics; benchmark write failures are now hard failures and promoted output is removed on write failure.
+
+### 2026-03-02_01.00.21 - `stderr` initialization guard in worker failure path
+- A prior flow path referenced `stderr` on success exits.
+- `worker.py` now initializes/guards this variable and only runs error-classification checks when execution is non-successful.
+- Result: avoids `UnboundLocalError` and preserves normal success path to schema validation/promotion.
+
+### 2026-03-02_00.45.23 - Auth 403 websocket failures are terminal
+- Websocket/auth failures like `HTTP 403 Forbidden` in Codex sessions were being treated as generic runtime failures.
+- They are now classified as auth-failure category and treated terminal to stop retry churn and force explicit remediation.

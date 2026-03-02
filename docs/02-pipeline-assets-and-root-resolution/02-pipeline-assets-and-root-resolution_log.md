@@ -90,3 +90,22 @@ read_when:
 - Source: merged historical notes (merged).
 - Established V1 direction that pipeline behavior is file-driven (`pipelines/`, `prompts/`, `schemas/`) rather than hard-coded per operation.
 - Logged early guardrail that missing prompt/schema files should fail immediately at load time with actionable errors.
+
+## 2026-03-02_16.00.00 - Duplicate inline prompt key collision fixed in benchmark prompt asset
+- Source: imported pipeline review revealed duplicate `prompt_input_mode` in inline benchmark JSON during migration review.
+- Decision: treat last-write duplicates as a correctness risk and require single-source prompt mode definitions in pack assets.
+- Outcome: remove duplicate key, preserving intended `inline` mode and keeping pipeline assets/lint contracts consistent for benchmark paths.
+
+## 2026-03-02_08.18.23 - Inline prompt payload support (`prompt_input_mode`) added
+
+- Source: `docs/tasks/2026-03-02_08.18.23-codexfarm-self-contained-inline-prompts.md`.
+- Goal/decision: keep existing `{{INPUT_PATH}}` path mode while adding `{{INPUT_TEXT}}` inline mode so prompts can be self-contained.
+- Architecture choice: implement inline rendering directly in `render_prompt_template(...)` and gate mode correctness in `pack_lint` instead of introducing a new template engine.
+- Contract choice: add explicit `prompt_input_mode` (`path|inline`) and fail fast with `pipeline.prompt_missing_required_token` when template and mode diverge.
+- Migration outcome:
+  - migrated prompt templates now carry inline payload blocks.
+  - tests were updated to lock both default-path and inline behavior.
+  - worker/task evidence confirms inline payload is present in prompt logs when enabled.
+- Major failure correction to remember:
+  - benchmark pipeline asset briefly carried duplicate `prompt_input_mode` keys; last-write behavior made the intended mode ambiguous and was fixed by removing duplicate keys.
+- Critical acceptance reminder: do not change mode rules without updating lint + docs together, or callers can pass invalid assets that fail late in worker execution.

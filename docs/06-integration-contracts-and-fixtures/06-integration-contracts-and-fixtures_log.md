@@ -68,3 +68,8 @@ read_when:
 
 - Source: merged historical notes (merged).
 - Recorded first repository-level acceptance baseline (`pytest` passing plus live `one`, `process`, and `go` checks) used as historical integration context.
+
+## 2026-03-02_08.25.42 - Prompt mode normalization pushed into pack lint contract
+- Source: prompt-template mode mismatches were being handled inconsistently between lint and runtime.
+- Decision: treat `PipelineSpecModel.prompt_input_mode` as authoritative; keep runtime rendering deterministic and route validation to lint.
+- Outcome: execution path stays stable while preflight catches mode/token drift earlier.

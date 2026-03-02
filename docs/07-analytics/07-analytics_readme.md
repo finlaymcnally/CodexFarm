@@ -151,3 +151,10 @@ Historical task docs merged into this chunk to preserve telemetry/autotune contr
 Known trap:
 
 - Duplicating telemetry writes outside `run_codex_exec` creates double-counting and inconsistent context coverage across command paths.
+
+## Merged understanding notes (`docs/understandings`)
+
+### 2026-03-02_01.26.15 - Handle mixed-schema telemetry rows robustly
+- `codex_exec_activity.csv` contains mixed historical schemas while header can remain older.
+- Prompt/text extraction should parse with positional/csv-reader logic and row-length handling, not strict `DictReader` by name.
+- Current payload alignment in this workspace follows 56-column schema shape from `src/codex_farm/codex_exec.py::_USAGE_LOG_FIELDS`.

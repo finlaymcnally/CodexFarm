@@ -168,3 +168,10 @@ Historical task docs merged into this chunk to preserve integration-evidence con
 Known anti-pattern:
 
 - Replacing dual fixture strategy with a single "simpler" approach has repeatedly reduced coverage on important seams.
+
+## Merged understanding notes (`docs/understandings`)
+
+### 2026-03-02_08.25.42 - Prompt mode is a pack-contract concern, not a renderer branch
+- `PipelineSpecModel` now owns authoritative mode (`prompt_input_mode`) and lint reads it directly, avoiding divergent parsing at lint/runtime seams.
+- Runtime rendering remains deterministic via token-based placeholders (`{{INPUT_PATH}}`, `{{INPUT_TEXT}}`) without branching per mode.
+- Enforcement of mode/token mismatch belongs in `pack_lint.py` checks (`pipeline.prompt_missing_required_token`) so failures are caught before execution.

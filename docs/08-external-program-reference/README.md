@@ -67,3 +67,44 @@ The following task specs were merged into this folder's docs/log to preserve ext
 
 - `docs/01-cli-and-command-contracts/01-cli-and-command-contracts_readme.md`
 - `docs/05-codex-exec-and-schema-gate/05-codex-exec-and-schema-gate_readme.md`
+
+## Merged understanding notes (`docs/understandings`)
+
+### 2026-03-01_20.40.25 - RecipeImport progress integration notes
+- `codex-farm run` and process callers should treat external helper failures as contract-bearing events and avoid relying on mutable local paths.
+
+### 2026-03-01_20.40.25 - Spinner/progress integration for RecipeImport callers
+- RecipeImport currently uses blocking `subprocess.run(..., capture_output=True)` and cannot stream live CodexFarm state.
+- Recommended caller-facing event pattern is `run progress --json` polling and/or stderr-prefixed progress events to keep machine parsing stable.
+- `process --json` must remain a single JSON payload on stdout.
+
+### 2026-03-02_14.50.12 - Oracle manual-login timeout pathology in browser mode
+- `/home/mcnal/.local/bin/oracle-browser-headless` is configured to force manual login; runs can appear stuck in pending state with empty model logs.
+- Useful repro command: `--browser-timeout 45s --browser-input-timeout 15s`; watch for `Manual login mode enabled`, `waiting for session to appear`, and timeout diagnostics.
+- Keep this in the caller troubleshooting section because it is mostly external login-behavior behavior.
+
+### 2026-03-02_15.03.51 - Browser profile artifacts and GitHub push protection
+- Push protection checks history (`origin/master..HEAD`) not current tree state.
+- A prior commit with Chromium profile cache bytes containing secrets blocked future pushes even after cleanup.
+- Preventive control: ignore browser profile/cache artifacts in `.gitignore` to avoid rediscovering this failure mode in external integration runs.
+
+## Task archives merged from `docs/tasks`
+
+### 2026-03-01_20.36.00 - `run progress` + `process --progress-events`
+
+This task introduced external-runner-friendly progress surfaces:
+
+- machine snapshot endpoint: `run progress --run-id <id> --json`
+- optional polling stream: `run progress --run-id <id> --watch --json`
+- process stderr event stream: `process --json --progress-events`
+- invariant: `process --json` keeps stdout as one stable machine object while progress events are stderr-only with prefix `__codex_farm_progress__ `.
+
+### 2026-03-02_09.37.43 - recipeimport benchmark-native mode
+
+This task added a dedicated benchmark path for recipeimport line-label runs:
+
+- opt-in run flags: `--recipeimport-benchmark-mode line_label_v1`, `--recipeimport-benchmark-debug`
+- deterministic canonical payload contract in task output and per-task `.recipeimport-benchmark/<task_id>/` artifacts.
+- explicit terminalization rule for benchmark contract failures (`benchmark_contract_error`), so contract failures are not treated as retriable transient errors.
+
+If an external caller needs both features, combine `run create/process/go` lifecycle commands with these contracts and read the per-task artifact layout from `benchmark-runtime-contracts.md`.

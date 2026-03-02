@@ -58,3 +58,9 @@ read_when:
 - Logged that telemetry CSV already carries enough context to build dashboard views without querying DB state.
 - Preserved static-dashboard design rule: generator is read-only on telemetry input files.
 - Captured renderer requirement to support direct `file://` use via inline data plus `assets/dashboard_data.json` fetch fallback.
+
+## 2026-03-02_01.26.15 - Positional telemetry parse fallback for legacy/mixed rows
+- Source: prompt-text/metric extraction broke when mixed row-width CSV histories hit stale header assumptions.
+- Decision: switch prompt sampling reads to positional CSV handling with length-aware parsing.
+- Outcome: telemetry tooling remains resilient across historical row shapes and avoids malformed index assumptions.
+

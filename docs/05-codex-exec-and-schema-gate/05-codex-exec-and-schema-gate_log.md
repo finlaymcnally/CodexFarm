@@ -82,3 +82,8 @@ read_when:
 - Reframed chunk 05 as acceptance boundary, not only subprocess wrapper.
 - Preserved atomic temp-file-to-final promotion requirement.
 - Reconfirmed separation of concerns: one-shot CLI failure behavior in `cli.one` versus retry/terminal branching in worker flow.
+
+## 2026-03-02_07.03.57 - Explicit schema-validation terminal category
+- Source: pass2/3 runs with schema failures were being masked as generic execution output failures.
+- Decision: detect `invalid_json_schema` and store it as a first-class failure category in direct and worker code paths.
+- Outcome: clearer run/task diagnostics and reduced noisy retry behavior on hard schema errors.

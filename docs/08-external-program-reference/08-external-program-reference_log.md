@@ -83,3 +83,40 @@ read_when:
 - Established external integrator workflow around `--root`, explicit `--workspace-root`, and machine-safe `process --json`.
 - Added caller-accessible task/error introspection (`run tasks --json`, `run errors --json`) to remove direct SQLite dependency.
 - Preserved run-config persistence of root/workspace values for deterministic retries and resumed workers.
+
+## 2026-03-01_20.40.25 - External caller progress surface for RecipeImport
+- Source: RecipeImport used blocking subprocess output capture and could not reflect CodexFarm task progress live.
+- Decision: prefer `run progress --json` and optional progress events for callers while preserving single-payload `process --json` contract.
+- Outcome: aligned caller contract with spinner-friendly polling/event channels and reduced coupling to stdout scraping.
+
+## 2026-03-02_14.50.12 - External browser integration timeout diagnostics
+- Source: forced manual-login mode in `oracle-browser-headless` produced hanging pending runs.
+- Decision: document timeboxed diagnostic sequence and timeout log markers for caller support.
+- Outcome: caller guidance now includes repeatable troubleshooting path for interactive-session-dependent browser helpers.
+
+## 2026-03-02_15.03.51 - Push-protection failure from browser profile secrets
+- Source: one commit introduced `.oracle/browser-profile/...` artifacts with JS containing a token; later cleanup did not clear historical push check.
+- Decision: add persistent `.gitignore` controls and maintain this as high-priority integration hygiene note.
+- Outcome: avoids repeated secret-history blocks for external automation teams and keeps CI/remote pushes deterministic.
+
+## 2026-03-01_20.36.00 - Spinner/progress surfaces for external callers
+
+- Source: `docs/tasks/2026-03-01_20.36.00-codexfarm-progress-events-for-callers.md`.
+- Decision: add `run progress` (snapshot + optional watch mode) and `process --progress-events` (stderr stream) instead of changing default `process` stdout behavior.
+- Why: external callers need live run visibility for spinner UX while the existing `process --json` single-payload contract must remain parse-stable.
+- Design constraint that remains locked: all progress events remain opt-in and additive; stdout machine contracts stay unchanged.
+- Operational memory:
+  - initial caller integrations that only consumed final JSON could not display intermediate progress.
+  - event output on stderr with fixed `__codex_farm_progress__ ` prefix became the stable boundary.
+
+## 2026-03-02_09.37.43 - Recipeimport benchmark runtime mode and artifact contracts
+
+- Source: `docs/tasks/2026-03-02_09.37.43-codexfarm-benchmark-runtime.md`.
+- Decision: keep benchmark mode additive behind explicit flags and dispatch `line_label_v1` to dedicated prompt/schema/pipeline assets.
+- Outcome:
+  - canonical per-line calibrated payload is now promoted as the task output contract.
+  - raw model payload remains a debug artifact for traceability.
+  - benchmark pass artifacts and manifest hashes are written per-task for downstream compare tooling.
+- High-severity path correction recorded:
+  - schema validation was moved after calibration; validating before calibration caused false negatives for normalizable fields.
+  - benchmark artifact write failures were moved from warning-only behavior to hard failures to avoid silent diagnostics loss.

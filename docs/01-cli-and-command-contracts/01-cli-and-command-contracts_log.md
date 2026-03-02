@@ -124,3 +124,15 @@ read_when:
 - Source: merged historical notes (merged).
 - Established V1 command surface and workflow split: `doctor`, `one`, `run create`, `process`, `go`, pipeline listing/scaffolding, and worker command.
 - Captured product-scope contract that remains important for caller expectations: local-only tool, CLI-first automation, and recipes-first V1 pipeline focus.
+
+## 2026-03-02_00.45.47 - External service context and preflight requirements
+- Source: external-caller failures where shell runs worked but service runs lacked Codex credentials.
+- Diagnosis: execution path relies on inherited `HOME/CODEX_HOME`; missing session context leads to auth failures and opaque worker churn.
+- Decision: `doctor` and execution callers now depend on explicit environment setup for logged-in credentials, and missing login is surfaced before queueing via `codex login status` precheck.
+- Operational guidance kept: `--no-login-precheck` and `CODEX_FARM_SKIP_LOGIN_PRECHECK=1` remain explicit bypasses when credential preflight must be deferred.
+
+## 2026-03-02_00.52.58 - Execution preflight gate for queue creation and worker start
+- Source: external caller runs were burning retries after enqueue on missing Codex login state.
+- Fix: default login precheck before task creation/processing in `one`, `worker`, `process`, and `go`.
+- Outcome: invalid sessions stop earlier, while callers can opt out intentionally in controlled contexts.
+

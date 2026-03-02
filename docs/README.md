@@ -104,3 +104,17 @@ read_when:
 
 When creating timestamped docs files, use:
 `YYYY-MM-DD_HH.MM.SS`
+
+## 2026-02-28_14.36.38 task-doc triage map (moved from `docs/understandings`)
+
+This note was used to collapse `docs/tasks` and `docs/understandings` entries into chunk ownership boundaries:
+
+- `docs/tasks/idea1-2.md`, `docs/tasks/idea1-7.md`, and related task triage entries belong to `docs/02-pipeline-assets-and-root-resolution`.
+- `docs/tasks/idea1-1.md` and `docs/tasks/idea1-4.md` map to `docs/03-run-planning-and-queue-state`.
+- `docs/tasks/2026-02-28_09.33.49-heads-up-adaptive-prompts.md`, `docs/tasks/idea1-3.md`, and `docs/tasks/idea1-5.md` map to `docs/04-worker-execution-and-retries`.
+- `docs/tasks/idea1-6.md` maps to `docs/05-codex-exec-and-schema-gate`.
+- `docs/tasks/2026-02-28_10.29.20-autotune-cli-diff-emitter.md` and `docs/tasks/2026-02-28-15.02.31-telemetry-reporting-api.md` map to `docs/07-analytics`.
+- `docs/understandings/2026-02-28_14.50.12-oracle-manual-login-timeout.md` and `docs/understandings/2026-02-28_15.03.51-github-push-protection-browser-profile-secret.md` are cross-cutting and were merged into `docs/08-external-program-reference`.
+- `docs/understandings/2026-03-01_20.40.25-recipeimport-codexfarm-progress-surface.md` also merged into `docs/08-external-program-reference`.
+
+Primary rule used: attribute runtime-facing notes to the chunk owning the failing seam, and keep cross-cutting exceptions in `08` so external integrations remain discoverable.

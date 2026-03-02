@@ -256,3 +256,10 @@ Known fragile areas:
 
 - Treating Codex exit code alone as truth breaks valid-output acceptance in real environments with noisy local shutdown/telemetry errors.
 - Over-tightening recipeimport fullshape requirements has already rejected production-like sparse payloads.
+
+## Merged understanding notes (`docs/understandings`)
+
+### 2026-03-02_07.03.57 - `invalid_json_schema` treated as explicit schema failure
+- Both direct `cli.py` execution path and worker path now parse stderr/stdout tails for `invalid_json_schema` and record a dedicated `failure_category`.
+- This keeps forensics actionable instead of collapsing into generic warnings like `no last agent message`.
+- In worker, `invalid_json_schema` follows terminal behavior so retries are not wasted on hard schema-violation failures.

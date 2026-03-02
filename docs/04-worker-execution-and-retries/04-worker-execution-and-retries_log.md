@@ -137,3 +137,28 @@ read_when:
 - Source: merged historical notes (merged).
 - Established lease-based retry architecture, attempt-budget defaults, and crash-reclaim behavior as V1 worker foundations.
 - Recorded early design decision to use in-process thread fan-out for `process` instead of nested worker subprocesses.
+
+## 2026-03-02_18.20.00 - Reordered benchmark validation pipeline
+- Source: benchmark payloads could fail schema early due recoverable out-of-range fields before calibration.
+- Decision: move schema gate after alignment/calibration in the worker loop for line-label benchmark tasks.
+- Result: reduces false negatives while still keeping canonical structural rejections terminal.
+
+## 2026-03-02_16.51.40 - Benchmark contract errors made terminal, plus coverage semantics clarified
+- Source: ambiguity between observed prediction coverage and post-fill alignment completeness.
+- Decision: set `alignment_coverage` to observed raw prediction coverage and keep `aligned_lines` for post-fill cardinality.
+- Decision: classify benchmark schema validation failures as `benchmark_contract_error` and stop retries as terminal contract mismatches.
+
+## 2026-03-02_10.18.00 - Benchmark hook-point hardening in worker retry flow
+- Source: stale-owner risk and misleading success states when benchmark artifacts were written before staged-output ownership checks.
+- Decision: parse/alignment before promotion, artifact write only after successful lease-checked promotion.
+- Outcome: removes ownership/race risk and treats artifact write failures as hard errors.
+
+## 2026-03-02_01.00.21 - Worker stderr-local-variable safety fix (critical path)
+- Source: reported `cannot access local variable 'stderr'` on successful Codex calls in worker loop.
+- Decision: initialize `stderr` and scope classification checks to non-success execution results.
+- Outcome: success path no longer throws internal Python errors before schema output promotion.
+
+## 2026-03-02_00.45.23 - Auth failure classification changed from retryable to terminal
+- Source: repeated websocket-auth failures (`HTTP 403`, backend-api session issues) consumed attempts without meaningful signal.
+- Decision: classify this class as terminal auth failures instead of generic retry path.
+- Outcome: worker now surfaces clearer categories and avoids useless retry loops.
