@@ -48,7 +48,14 @@ def _fake_recipe(name: str) -> dict:
     }
 
 
-def _write_demo_pack(root: Path, *, pipeline_id: str, codex_cd_mode: str) -> None:
+def _write_demo_pack(
+    root: Path,
+    *,
+    pipeline_id: str,
+    codex_cd_mode: str,
+    prompt_input_mode: str | None = None,
+    prompt_template_text: str | None = None,
+) -> None:
     for folder in ("pipelines", "prompts", "schemas"):
         (root / folder).mkdir(parents=True, exist_ok=True)
 
@@ -71,9 +78,12 @@ def _write_demo_pack(root: Path, *, pipeline_id: str, codex_cd_mode: str) -> Non
         "codex_timeout_seconds": 180,
         "codex_cd_mode": codex_cd_mode,
     }
+    if prompt_input_mode is not None:
+        pipeline_payload["prompt_input_mode"] = prompt_input_mode
     pipeline_path.write_text(json.dumps(pipeline_payload, indent=2) + "\n", encoding="utf-8")
 
-    (root / prompt_rel).write_text("Input file path: {{INPUT_PATH}}\n", encoding="utf-8")
+    prompt_body = prompt_template_text or "Input file path: {{INPUT_PATH}}\n"
+    (root / prompt_rel).write_text(prompt_body, encoding="utf-8")
     (root / schema_rel).write_text(
         json.dumps(
             {
@@ -84,6 +94,86 @@ def _write_demo_pack(root: Path, *, pipeline_id: str, codex_cd_mode: str) -> Non
                 "properties": {
                     "ok": {"type": "string"},
                     "source_path": {"type": "string"},
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_benchmark_pack(
+    root: Path,
+    *,
+    pipeline_id: str,
+    codex_cd_mode: str,
+    prompt_input_mode: str | None = None,
+    prompt_template_text: str | None = None,
+) -> None:
+    for folder in ("pipelines", "prompts", "schemas"):
+        (root / folder).mkdir(parents=True, exist_ok=True)
+
+    slug = pipeline_id.replace(".", "_")
+    prompt_rel = Path("prompts") / f"{slug}.txt"
+    schema_rel = Path("schemas") / f"{slug}.schema.json"
+    pipeline_path = root / "pipelines" / f"{pipeline_id}.json"
+
+    pipeline_payload = {
+        "pipeline_id": pipeline_id,
+        "description": f"Benchmark pipeline {pipeline_id}",
+        "prompt_template_path": prompt_rel.as_posix(),
+        "output_schema_path": schema_rel.as_posix(),
+        "input_glob_default": "**/*.json",
+        "output_ext": ".json",
+        "codex_model": "gpt-5.3-codex-spark",
+        "codex_sandbox": "read-only",
+        "codex_ask_for_approval": "never",
+        "codex_web_search": "disabled",
+        "codex_timeout_seconds": 180,
+        "codex_cd_mode": codex_cd_mode,
+    }
+    if prompt_input_mode is not None:
+        pipeline_payload["prompt_input_mode"] = prompt_input_mode
+    pipeline_path.write_text(json.dumps(pipeline_payload, indent=2) + "\n", encoding="utf-8")
+
+    prompt_body = prompt_template_text or "Input file path: {{INPUT_PATH}}\n"
+    (root / prompt_rel).write_text(prompt_body, encoding="utf-8")
+    (root / schema_rel).write_text(
+        json.dumps(
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["line_predictions"],
+                "properties": {
+                    "line_predictions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": [
+                                "line_index",
+                                "label",
+                                "confidence",
+                                "evidence_line_indices",
+                                "reasoning_tags",
+                            ],
+                            "properties": {
+                                "line_index": {"type": "integer", "minimum": 0},
+                                "label": {"type": "string", "minLength": 1},
+                                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                                "evidence_line_indices": {
+                                    "type": "array",
+                                    "items": {"type": "integer", "minimum": 0},
+                                },
+                                "reasoning_tags": {
+                                    "type": "array",
+                                    "items": {"type": "string", "minLength": 1},
+                                },
+                            },
+                        },
+                    }
                 },
             },
             indent=2,
@@ -840,6 +930,536 @@ def test_worker_loop_uses_output_schema_override_from_run_config(
     assert status["done"] == 1
     assert status["error"] == 0
     assert captured_schema_paths == [str(override_schema.resolve())]
+
+
+def test_worker_loop_writes_recipeimport_benchmark_artifacts_when_enabled(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    pack_root = tmp_path / "pack"
+    pipeline_id = "demo.benchmark.v1"
+    input_payload = {
+        "canonical_lines": [
+            {"line_index": 0, "text": "Title line", "expected_label": "title"},
+            {"line_index": 1, "text": "2 cups flour", "expected_label": "ingredient"},
+            {"line_index": 2, "text": "Mix well.", "expected_label": "instruction"},
+        ]
+    }
+    _write_benchmark_pack(
+        pack_root,
+        pipeline_id=pipeline_id,
+        codex_cd_mode="asset_root",
+        prompt_input_mode="inline",
+        prompt_template_text="You are labeling a canonical payload.\n\n{{INPUT_TEXT}}\n",
+    )
+    pipelines = load_pipelines(pack_root / "pipelines")
+    spec = pipelines[pipeline_id]
+
+    input_dir = tmp_path / "in"
+    output_dir = tmp_path / "out"
+    data_dir = tmp_path / "var"
+    input_dir.mkdir(parents=True)
+    output_dir.mkdir(parents=True)
+    data_dir.mkdir(parents=True)
+    input_path = input_dir / "sample.json"
+    payload_text = json.dumps(input_payload)
+    input_path.write_text(payload_text, encoding="utf-8")
+
+    conn = open_db(data_dir / "codex_farm.sqlite3")
+    init_db(conn)
+    run_id = create_run(
+        conn,
+        pipeline_id=spec.pipeline_id,
+        input_dir=str(input_dir.resolve()),
+        glob="**/*.json",
+        output_dir=str(output_dir.resolve()),
+        config={
+            "farm_root": str(pack_root.resolve()),
+            "recipeimport_benchmark_mode": "line_label_v1",
+            "recipeimport_benchmark_debug": True,
+        },
+    )
+    enqueue_tasks_for_run(
+        conn,
+        run_id=run_id,
+        input_files=[input_path],
+        input_root=input_dir,
+        output_root=output_dir,
+        output_ext=spec.output_ext,
+    )
+    captured_prompts: list[str] = []
+
+    def fake_run_codex_exec(**kwargs):
+        captured_prompts.append(str(kwargs["prompt"]))
+        out = kwargs["output_path"]
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            json.dumps(
+                {
+                    "line_predictions": [
+                        {
+                            "line_index": 0,
+                            "label": "title",
+                            "confidence": 0.99,
+                            "evidence_line_indices": [0],
+                            "reasoning_tags": ["header_line"],
+                        },
+                        {
+                            "line_index": 1,
+                            "label": "ingredient",
+                            "confidence": 0.96,
+                            "evidence_line_indices": [1],
+                            "reasoning_tags": ["quantity_found"],
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        return CodexExecResult(ok=True, exit_code=0, stderr_tail="", stdout_tail="")
+
+    monkeypatch.setattr("codex_farm.worker.run_codex_exec", fake_run_codex_exec)
+
+    code = worker_loop(
+        data_dir=data_dir,
+        worker_id="test-worker",
+        run_id=run_id,
+        lease_seconds=120,
+        max_attempts=3,
+        poll_seconds=0.01,
+        once=True,
+    )
+
+    assert code == 0
+    status = run_status(conn, run_id=run_id)
+    assert status["done"] == 1
+    tasks = list_tasks_for_run(conn, run_id=run_id)
+    assert len(tasks) == 1
+    artifact_dirs = [
+        path
+        for path in (output_dir / ".recipeimport-benchmark").iterdir()
+        if path.is_dir() and not path.name.startswith(".")
+    ]
+    assert len(artifact_dirs) == 1
+    artifacts_dir = artifact_dirs[0]
+    manifest_path = artifacts_dir / "debug.manifest.json"
+    assert manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["mode"] == "line_label_v1"
+    assert manifest["debug_enabled"] is True
+    assert "pass_stage_scores" in manifest["pass_metrics"]
+    assert captured_prompts
+    captured_prompt = captured_prompts[0]
+    assert payload_text in captured_prompt
+    assert "Input file path" not in captured_prompt
+    assert (artifacts_dir / "predictions.calibrated.json").exists()
+    assert (artifacts_dir / "calibration.actions.json").exists()
+    debug_prompt = (artifacts_dir / "debug.request.prompt.txt").read_text(encoding="utf-8")
+    assert debug_prompt == captured_prompt
+    assert payload_text in debug_prompt
+    assert "Input file path" not in debug_prompt
+    assert (artifacts_dir / "debug.response.output.raw.json").exists()
+
+
+def test_worker_loop_benchmark_mode_calibrates_before_schema_validation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    pack_root = tmp_path / "pack"
+    pipeline_id = "demo.benchmark.calibration.v1"
+    input_payload = {
+        "canonical_lines": [
+            {"line_index": 0, "text": "Title line", "expected_label": "title"},
+        ]
+    }
+    _write_benchmark_pack(
+        pack_root,
+        pipeline_id=pipeline_id,
+        codex_cd_mode="asset_root",
+        prompt_input_mode="inline",
+        prompt_template_text="Payload:\n{{INPUT_TEXT}}\n",
+    )
+    pipelines = load_pipelines(pack_root / "pipelines")
+    spec = pipelines[pipeline_id]
+
+    input_dir = tmp_path / "in"
+    output_dir = tmp_path / "out"
+    data_dir = tmp_path / "var"
+    input_dir.mkdir(parents=True)
+    output_dir.mkdir(parents=True)
+    data_dir.mkdir(parents=True)
+    input_path = input_dir / "sample.json"
+    payload_text = json.dumps(input_payload)
+    input_path.write_text(payload_text, encoding="utf-8")
+
+    conn = open_db(data_dir / "codex_farm.sqlite3")
+    init_db(conn)
+    run_id = create_run(
+        conn,
+        pipeline_id=spec.pipeline_id,
+        input_dir=str(input_dir.resolve()),
+        glob="**/*.json",
+        output_dir=str(output_dir.resolve()),
+        config={
+            "farm_root": str(pack_root.resolve()),
+            "recipeimport_benchmark_mode": "line_label_v1",
+            "recipeimport_benchmark_debug": True,
+        },
+    )
+    enqueue_tasks_for_run(
+        conn,
+        run_id=run_id,
+        input_files=[input_path],
+        input_root=input_dir,
+        output_root=output_dir,
+        output_ext=spec.output_ext,
+    )
+
+    def fake_run_codex_exec(**kwargs):
+        out = kwargs["output_path"]
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            json.dumps(
+                {
+                    "line_predictions": [
+                        {
+                            "line_index": 0,
+                            "label": "title",
+                            "confidence": 1.5,
+                            "evidence_line_indices": [0],
+                            "reasoning_tags": ["header_line"],
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        return CodexExecResult(ok=True, exit_code=0, stderr_tail="", stdout_tail="")
+
+    monkeypatch.setattr("codex_farm.worker.run_codex_exec", fake_run_codex_exec)
+
+    code = worker_loop(
+        data_dir=data_dir,
+        worker_id="test-worker",
+        run_id=run_id,
+        lease_seconds=120,
+        max_attempts=3,
+        poll_seconds=0.01,
+        once=True,
+    )
+
+    assert code == 0
+    status = run_status(conn, run_id=run_id)
+    assert status["done"] == 1
+    tasks = list_tasks_for_run(conn, run_id=run_id)
+    assert len(tasks) == 1
+    assert tasks[0]["error"] is None
+
+    artifact_dirs = [
+        path
+        for path in (output_dir / ".recipeimport-benchmark").iterdir()
+        if path.is_dir() and not path.name.startswith(".")
+    ]
+    assert len(artifact_dirs) == 1
+    artifacts_dir = artifact_dirs[0]
+    calibrated = json.loads(
+        (artifacts_dir / "predictions.calibrated.json").read_text(encoding="utf-8")
+    )
+    assert calibrated[0]["confidence"] == 1.0
+    final_output = json.loads((output_dir / "sample.json").read_text(encoding="utf-8"))
+    assert final_output["line_predictions"][0]["confidence"] == 1.0
+    raw_debug_output = json.loads(
+        (artifacts_dir / "debug.response.output.raw.json").read_text(encoding="utf-8")
+    )
+    assert raw_debug_output["line_predictions"][0]["confidence"] == 1.5
+
+
+def test_worker_loop_marks_benchmark_contract_error_for_nonbenchmark_output(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    pack_root = tmp_path / "pack"
+    pipeline_id = "demo.not.benchmark.v1"
+    _write_demo_pack(pack_root, pipeline_id=pipeline_id, codex_cd_mode="asset_root")
+    pipelines = load_pipelines(pack_root / "pipelines")
+    spec = pipelines[pipeline_id]
+
+    input_dir = tmp_path / "in"
+    output_dir = tmp_path / "out"
+    data_dir = tmp_path / "var"
+    input_dir.mkdir(parents=True)
+    output_dir.mkdir(parents=True)
+    data_dir.mkdir(parents=True)
+    input_path = input_dir / "sample.json"
+    input_path.write_text(json.dumps({"name": "demo"}), encoding="utf-8")
+
+    conn = open_db(data_dir / "codex_farm.sqlite3")
+    init_db(conn)
+    run_id = create_run(
+        conn,
+        pipeline_id=spec.pipeline_id,
+        input_dir=str(input_dir.resolve()),
+        glob="**/*.json",
+        output_dir=str(output_dir.resolve()),
+        config={
+            "farm_root": str(pack_root.resolve()),
+            "recipeimport_benchmark_mode": "line_label_v1",
+        },
+    )
+    enqueue_tasks_for_run(
+        conn,
+        run_id=run_id,
+        input_files=[input_path],
+        input_root=input_dir,
+        output_root=output_dir,
+        output_ext=spec.output_ext,
+    )
+
+    def fake_run_codex_exec(**kwargs):
+        out = kwargs["output_path"]
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            json.dumps({"ok": "OK", "source_path": str(input_path.resolve())}),
+            encoding="utf-8",
+        )
+        return CodexExecResult(ok=True, exit_code=0, stderr_tail="")
+
+    monkeypatch.setattr("codex_farm.worker.run_codex_exec", fake_run_codex_exec)
+
+    code = worker_loop(
+        data_dir=data_dir,
+        worker_id="test-worker",
+        run_id=run_id,
+        lease_seconds=120,
+        max_attempts=3,
+        poll_seconds=0.01,
+        once=True,
+    )
+
+    assert code == 1
+    status = run_status(conn, run_id=run_id)
+    assert status["error"] == 1
+    tasks = list_tasks_for_run(conn, run_id=run_id)
+    assert len(tasks) == 1
+    assert "failed to parse benchmark artifacts" in str(tasks[0]["error"])
+
+
+def test_worker_loop_treats_benchmark_schema_validation_failure_as_terminal(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    pack_root = tmp_path / "pack"
+    pipeline_id = "demo.benchmark.schema.contract.v1"
+    _write_benchmark_pack(pack_root, pipeline_id=pipeline_id, codex_cd_mode="asset_root")
+    slug = pipeline_id.replace(".", "_")
+    schema_path = pack_root / "schemas" / f"{slug}.schema.json"
+    schema_path.write_text(
+        json.dumps(
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["line_predictions", "must_exist"],
+                "properties": {
+                    "line_predictions": {"type": "array"},
+                    "must_exist": {"type": "string"},
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    pipelines = load_pipelines(pack_root / "pipelines")
+    spec = pipelines[pipeline_id]
+
+    input_dir = tmp_path / "in"
+    output_dir = tmp_path / "out"
+    data_dir = tmp_path / "var"
+    input_dir.mkdir(parents=True)
+    output_dir.mkdir(parents=True)
+    data_dir.mkdir(parents=True)
+    input_path = input_dir / "sample.json"
+    input_path.write_text(
+        json.dumps(
+            {
+                "canonical_lines": [
+                    {"line_index": 0, "text": "Line zero", "expected_label": "title"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    conn = open_db(data_dir / "codex_farm.sqlite3")
+    init_db(conn)
+    run_id = create_run(
+        conn,
+        pipeline_id=spec.pipeline_id,
+        input_dir=str(input_dir.resolve()),
+        glob="**/*.json",
+        output_dir=str(output_dir.resolve()),
+        config={
+            "farm_root": str(pack_root.resolve()),
+            "recipeimport_benchmark_mode": "line_label_v1",
+        },
+    )
+    enqueue_tasks_for_run(
+        conn,
+        run_id=run_id,
+        input_files=[input_path],
+        input_root=input_dir,
+        output_root=output_dir,
+        output_ext=spec.output_ext,
+    )
+
+    def fake_run_codex_exec(**kwargs):
+        out = kwargs["output_path"]
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            json.dumps(
+                {
+                    "line_predictions": [
+                        {
+                            "line_index": 0,
+                            "label": "title",
+                            "confidence": 0.95,
+                            "evidence_line_indices": [0],
+                            "reasoning_tags": ["header_line"],
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        return CodexExecResult(ok=True, exit_code=0, stderr_tail="")
+
+    monkeypatch.setattr("codex_farm.worker.run_codex_exec", fake_run_codex_exec)
+
+    code = worker_loop(
+        data_dir=data_dir,
+        worker_id="test-worker",
+        run_id=run_id,
+        lease_seconds=120,
+        max_attempts=3,
+        poll_seconds=0.01,
+        once=True,
+    )
+
+    assert code == 1
+    status = run_status(conn, run_id=run_id)
+    assert status["error"] == 1
+    assert status["queued"] == 0
+    tasks = list_tasks_for_run(conn, run_id=run_id)
+    assert len(tasks) == 1
+    assert tasks[0]["status"] == "error"
+    rows = list_failure_forensics(conn, run_id=run_id)
+    assert len(rows) == 1
+    assert rows[0]["failure_stage"] == "schema_validation"
+    assert rows[0]["failure_category"] == "benchmark_contract_error"
+    assert rows[0]["terminal"] is True
+
+
+def test_worker_loop_retries_when_benchmark_artifact_write_fails(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    pack_root = tmp_path / "pack"
+    pipeline_id = "demo.benchmark.retry.v1"
+    _write_benchmark_pack(pack_root, pipeline_id=pipeline_id, codex_cd_mode="asset_root")
+    pipelines = load_pipelines(pack_root / "pipelines")
+    spec = pipelines[pipeline_id]
+
+    input_dir = tmp_path / "in"
+    output_dir = tmp_path / "out"
+    data_dir = tmp_path / "var"
+    input_dir.mkdir(parents=True)
+    output_dir.mkdir(parents=True)
+    data_dir.mkdir(parents=True)
+    input_path = input_dir / "sample.json"
+    input_path.write_text(
+        json.dumps(
+            {
+                "canonical_lines": [
+                    {"line_index": 0, "text": "Line zero", "expected_label": "title"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    conn = open_db(data_dir / "codex_farm.sqlite3")
+    init_db(conn)
+    run_id = create_run(
+        conn,
+        pipeline_id=spec.pipeline_id,
+        input_dir=str(input_dir.resolve()),
+        glob="**/*.json",
+        output_dir=str(output_dir.resolve()),
+        config={
+            "farm_root": str(pack_root.resolve()),
+            "recipeimport_benchmark_mode": "line_label_v1",
+            "recipeimport_benchmark_debug": True,
+        },
+    )
+    enqueue_tasks_for_run(
+        conn,
+        run_id=run_id,
+        input_files=[input_path],
+        input_root=input_dir,
+        output_root=output_dir,
+        output_ext=spec.output_ext,
+    )
+
+    call_count = 0
+
+    def fake_run_codex_exec(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        out = kwargs["output_path"]
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            json.dumps(
+                {
+                    "line_predictions": [
+                        {
+                            "line_index": 0,
+                            "label": "title",
+                            "confidence": 0.99,
+                            "evidence_line_indices": [0],
+                            "reasoning_tags": ["header_line"],
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        return CodexExecResult(ok=True, exit_code=0, stderr_tail="")
+
+    monkeypatch.setattr("codex_farm.worker.run_codex_exec", fake_run_codex_exec)
+    monkeypatch.setattr(
+        "codex_farm.worker.write_line_label_benchmark_artifacts",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("disk full")),
+    )
+
+    code = worker_loop(
+        data_dir=data_dir,
+        worker_id="test-worker",
+        run_id=run_id,
+        lease_seconds=120,
+        max_attempts=1,
+        poll_seconds=0.01,
+        once=True,
+    )
+
+    assert code == 1
+    assert call_count == 1
+    status = run_status(conn, run_id=run_id)
+    assert status["error"] == 1
+    tasks = list_tasks_for_run(conn, run_id=run_id)
+    assert len(tasks) == 1
+    assert "failed to persist recipeimport benchmark artifacts" in str(tasks[0]["error"])
+    assert not (output_dir / "sample.json").exists()
 
 
 def test_run_scoped_worker_waits_through_pause_and_continues_after_resume(

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RecipeImport Benchmark Line Label Predictions v1",
+  "description": "One label prediction per canonical line for benchmark-native scoring.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "line_predictions"
+  ],
+  "properties": {
+    "line_predictions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "line_index",
+          "label",
+          "confidence",
+          "evidence_line_indices",
+          "reasoning_tags"
+        ],
+        "properties": {
+          "line_index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "evidence_line_indices": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "reasoning_tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    }
+  }
+}

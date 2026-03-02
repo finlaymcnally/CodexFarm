@@ -1,0 +1,19 @@
+{
+  "canonical_lines": [
+    {
+      "line_index": 0,
+      "text": "Weeknight Tomato Soup",
+      "expected_label": "title"
+    },
+    {
+      "line_index": 1,
+      "text": "2 cups crushed tomatoes",
+      "expected_label": "ingredient"
+    },
+    {
+      "line_index": 2,
+      "text": "Simmer for 15 minutes.",
+      "expected_label": "instruction"
+    }
+  ]
+}

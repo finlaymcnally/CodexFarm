@@ -203,7 +203,7 @@ Why this matters:
 
 ## Prompt-adjustment extension seam
 
-- Prompt text construction still starts at `pipeline_spec.render_prompt_template(...)`, which currently only substitutes `{{INPUT_PATH}}`.
+- Prompt text construction still starts at `pipeline_spec.render_prompt_template(...)`, which substitutes `{{INPUT_PATH}}` and `{{INPUT_TEXT}}` deterministically.
 - New prompt-adaptation behavior should stay execution-time scoped: persist run-level toggles/hint sources in `runs.config_json` and consume them in worker prompt rendering.
 - Heads Up adaptation is intentionally cross-run: workers use persisted run config plus current tips at lease time, but they do not activate tips learned mid-run for the same run.
 - Tip scoring stays local and explainable: rank by `(wins + 1) / (uses + 2)` and suppress repeatedly bad tips once `uses >= 8` and `score < 0.25`.

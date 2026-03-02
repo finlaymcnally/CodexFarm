@@ -9,6 +9,7 @@ import os
 import re
 import threading
 import time
+import tempfile
 from pathlib import Path
 
 from .codex_exec import (
@@ -49,11 +50,18 @@ from .lease_heartbeat import LeaseContext, LeaseHeartbeatSession
 from .paths import db_path_for_data_dir, resolve_farm_root
 from .pipeline_spec import load_pipelines, render_prompt_template
 from .rate_limit_policy import apply_rate_limit, apply_success, is_cooldown_active, should_give_up
+from .recipeimport_benchmark_eval import (
+    RECIPEIMPORT_BENCHMARK_MODE,
+    PreparedLineLabelBenchmarkArtifacts,
+    prepare_line_label_benchmark_artifacts,
+    write_line_label_benchmark_artifacts,
+)
 from .run_assets import FrozenExecutionSpec, FrozenRunAssetsError, load_frozen_run_assets
 from .schema_utils import SchemaValidationError, validate_json_file_against_schema
 
 
 CODEX_REASONING_EFFORT_VALUES = {"none", "minimal", "low", "medium", "high", "xhigh"}
+RECIPEIMPORT_BENCHMARK_MODE_VALUES = {RECIPEIMPORT_BENCHMARK_MODE}
 _INVALID_JSON_SCHEMA_PATTERN = re.compile(r"invalid_json_schema", re.IGNORECASE)
 
 
@@ -140,6 +148,7 @@ def _promote_staged_output_if_owner(
     lease_token: str,
     staged_output_path: Path,
     final_output_path: Path,
+    finalize_task: bool = True,
 ) -> bool:
     if not staged_output_path.exists():
         return False
@@ -161,16 +170,17 @@ def _promote_staged_output_if_owner(
             conn.rollback()
             return False
         os.replace(staged_output_path, final_output_path)
-        transitioned = mark_task_done(
-            conn,
-            task_id=task_id,
-            output_path=str(final_output_path),
-            lease_token=lease_token,
-            commit=False,
-        )
-        if not transitioned:
-            conn.rollback()
-            return False
+        if finalize_task:
+            transitioned = mark_task_done(
+                conn,
+                task_id=task_id,
+                output_path=str(final_output_path),
+                lease_token=lease_token,
+                commit=False,
+            )
+            if not transitioned:
+                conn.rollback()
+                return False
         conn.commit()
         return True
     except Exception:
@@ -284,6 +294,47 @@ def _resolve_output_schema_override(
             f"{configured}"
         )
     return configured
+
+
+def _resolve_recipeimport_benchmark_mode(
+    *,
+    run_config: dict[str, object],
+) -> str | None:
+    configured = run_config.get("recipeimport_benchmark_mode")
+    if configured is None:
+        return None
+    if not isinstance(configured, str):
+        raise ValueError("recipeimport_benchmark_mode in run config must be a string.")
+    normalized = configured.strip().lower()
+    if not normalized:
+        return None
+    if normalized not in RECIPEIMPORT_BENCHMARK_MODE_VALUES:
+        allowed = ", ".join(sorted(RECIPEIMPORT_BENCHMARK_MODE_VALUES))
+        raise ValueError(
+            "Invalid recipeimport_benchmark_mode in run config. "
+            f"Expected one of: {allowed}"
+        )
+    return normalized
+
+
+def _resolve_recipeimport_benchmark_debug(
+    *,
+    run_config: dict[str, object],
+) -> bool:
+    configured = run_config.get("recipeimport_benchmark_debug")
+    if isinstance(configured, bool):
+        return configured
+    if configured is None:
+        return False
+    if isinstance(configured, str):
+        normalized = configured.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    raise ValueError(
+        "recipeimport_benchmark_debug in run config must be boolean or boolean-like string."
+    )
 
 
 def _resolve_task_cd_dir(
@@ -526,6 +577,12 @@ def worker_loop(
                 worker_root=farm_root,
             )
             workspace_root_override = _resolve_workspace_root_override(run_config=run_config)
+            recipeimport_benchmark_mode = _resolve_recipeimport_benchmark_mode(
+                run_config=run_config
+            )
+            recipeimport_benchmark_debug = _resolve_recipeimport_benchmark_debug(
+                run_config=run_config
+            )
         except (FileNotFoundError, ValueError) as exc:
             error_full = str(exc)
             error_summary = _trim_error(error_full)
@@ -565,6 +622,7 @@ def worker_loop(
         selected_effort: str | None
         selected_output_schema: Path
         selected_output_schema_logical: Path
+        prepared_benchmark_artifacts: PreparedLineLabelBenchmarkArtifacts | None = None
         has_frozen_assets = "frozen_assets" in run_config
         frozen_assets_config = run_config.get("frozen_assets")
         if has_frozen_assets:
@@ -883,6 +941,7 @@ def worker_loop(
         codex_stdout_tail: str | None = None
         codex_stderr_tail: str | None = None
         codex_exit_code: int | None = None
+        raw_benchmark_output_text: str | None = None
 
         try:
             usage_context = {
@@ -892,6 +951,8 @@ def worker_loop(
                 "task_id": task["task_id"],
                 "worker_id": worker_id,
                 "input_path": str(input_path),
+                "recipeimport_benchmark_mode": recipeimport_benchmark_mode,
+                "recipeimport_benchmark_debug": recipeimport_benchmark_debug,
                 "heads_up_applied": bool(applied_tip_texts),
                 "heads_up_tip_count": len(applied_tip_texts),
                 "heads_up_input_signature": input_signature or None,
@@ -921,6 +982,7 @@ def worker_loop(
             codex_stdout_tail = result.stdout_tail
             codex_stderr_tail = result.stderr_tail
             codex_exit_code = result.exit_code
+            stderr = "no stderr"
             if not result.ok:
                 combined_tails = "\n".join(
                     part
@@ -928,39 +990,39 @@ def worker_loop(
                     if isinstance(part, str) and part.strip()
                 ).strip()
                 stderr = combined_tails or result.stderr_tail or "no stderr"
-            if is_auth_failure_message(stderr):
-                raise WorkerRuntimeFailure(
-                    (
-                        "codex auth failed: run `codex` once and sign in with ChatGPT, "
-                        "then retry this run. "
-                        f"codex exit={result.exit_code}; details: {stderr}"
-                    ),
-                    failure_category="auth_failure",
-                    stdout_tail=result.stdout_tail,
-                    stderr_tail=result.stderr_tail,
-                )
-            invalid_schema_message = _extract_invalid_json_schema_message(stderr)
-            if invalid_schema_message:
-                raise WorkerRuntimeFailure(
-                    (
-                        f"codex invalid_json_schema returned from codex API (exit={result.exit_code}): "
-                        f"{invalid_schema_message}"
-                    ),
-                    failure_category="invalid_json_schema",
-                    stdout_tail=result.stdout_tail,
-                    stderr_tail=result.stderr_tail,
-                )
-            if is_rate_limit_message(stderr):
-                retry_after_seconds = extract_retry_after_seconds(stderr)
-                raise CodexExecRateLimitError(
-                    (
-                        "WARNING: codex rate limit (HTTP 429) detected; "
-                            "entering adaptive cooldown. "
+                if is_auth_failure_message(stderr):
+                    raise WorkerRuntimeFailure(
+                        (
+                            "codex auth failed: run `codex` once and sign in with ChatGPT, "
+                            "then retry this run. "
                             f"codex exit={result.exit_code}; details: {stderr}"
                         ),
-                        retry_after_seconds=retry_after_seconds,
-                        stderr_tail=stderr,
+                        failure_category="auth_failure",
+                        stdout_tail=result.stdout_tail,
+                        stderr_tail=result.stderr_tail,
                     )
+                invalid_schema_message = _extract_invalid_json_schema_message(stderr)
+                if invalid_schema_message:
+                    raise WorkerRuntimeFailure(
+                        (
+                            f"codex invalid_json_schema returned from codex API (exit={result.exit_code}): "
+                            f"{invalid_schema_message}"
+                        ),
+                        failure_category="invalid_json_schema",
+                        stdout_tail=result.stdout_tail,
+                        stderr_tail=result.stderr_tail,
+                    )
+                if is_rate_limit_message(stderr):
+                    retry_after_seconds = extract_retry_after_seconds(stderr)
+                    raise CodexExecRateLimitError(
+                        (
+                            "WARNING: codex rate limit (HTTP 429) detected; "
+                                "entering adaptive cooldown. "
+                                f"codex exit={result.exit_code}; details: {stderr}"
+                            ),
+                            retry_after_seconds=retry_after_seconds,
+                            stderr_tail=stderr,
+                        )
                 failure_category = (
                     "runtime_zero_no_payload"
                     if result.exit_code == 0
@@ -973,20 +1035,124 @@ def worker_loop(
                     stderr_tail=result.stderr_tail,
                 )
 
-            validate_json_file_against_schema(
-                json_path=staged_output_path,
-                schema_path=selected_output_schema,
-            )
+            if recipeimport_benchmark_mode == RECIPEIMPORT_BENCHMARK_MODE:
+                tmp_payload_path: Path | None = None
+                try:
+                    raw_benchmark_output_text = staged_output_path.read_text(encoding="utf-8")
+                    prepared_benchmark_artifacts = prepare_line_label_benchmark_artifacts(
+                        input_path=input_path,
+                        output_path=staged_output_path,
+                    )
+                    canonical_payload = {
+                        "line_predictions": [
+                            {
+                                "line_index": row.line_index,
+                                "label": row.label,
+                                "confidence": row.confidence,
+                                "evidence_line_indices": list(row.evidence_line_indices),
+                                "reasoning_tags": list(row.reasoning_tags),
+                            }
+                            for row in prepared_benchmark_artifacts.calibrated_predictions
+                        ],
+                    }
+                    staged_output_path.write_text(
+                        json.dumps(canonical_payload, indent=2, sort_keys=True) + "\n",
+                        encoding="utf-8",
+                    )
+                    with tempfile.NamedTemporaryFile(
+                        "w",
+                        encoding="utf-8",
+                        suffix=".json",
+                        delete=False,
+                    ) as handle:
+                        tmp_payload_path = Path(handle.name)
+                        json.dump(
+                            canonical_payload,
+                            handle,
+                        )
+                        handle.flush()
+                    validate_json_file_against_schema(
+                        json_path=tmp_payload_path,
+                        schema_path=selected_output_schema,
+                    )
+                except ValueError as exc:
+                    raise WorkerRuntimeFailure(
+                        (
+                            "recipeimport benchmark mode expects line-label benchmark payloads; "
+                            f"failed to parse benchmark artifacts: {exc}"
+                        ),
+                        failure_category="benchmark_contract_error",
+                        stdout_tail=codex_stdout_tail,
+                        stderr_tail=codex_stderr_tail,
+                    ) from exc
+                finally:
+                    if tmp_payload_path is not None:
+                        tmp_payload_path.unlink(missing_ok=True)
+            else:
+                validate_json_file_against_schema(
+                    json_path=staged_output_path,
+                    schema_path=selected_output_schema,
+                )
             transitioned = _promote_staged_output_if_owner(
                 conn,
                 task_id=task["task_id"],
                 lease_token=task_lease_token,
                 staged_output_path=staged_output_path,
                 final_output_path=final_output_path,
+                finalize_task=recipeimport_benchmark_mode != RECIPEIMPORT_BENCHMARK_MODE,
             )
             if not transitioned:
                 staged_output_path.unlink(missing_ok=True)
                 continue
+            if (
+                recipeimport_benchmark_mode == RECIPEIMPORT_BENCHMARK_MODE
+            ):
+                if prepared_benchmark_artifacts is None:
+                    raise WorkerRuntimeFailure(
+                        (
+                            "recipeimport benchmark mode was enabled but benchmark artifacts "
+                            "were not prepared before output promotion."
+                        ),
+                        failure_category="benchmark_contract_error",
+                        stdout_tail=codex_stdout_tail,
+                        stderr_tail=codex_stderr_tail,
+                    )
+                try:
+                    write_line_label_benchmark_artifacts(
+                        run_output_dir=Path(run["output_dir"]).resolve(),
+                        run_id=str(task["run_id"]),
+                        task_id=str(task["task_id"]),
+                        pipeline_id=pipeline_id,
+                        input_path=input_path,
+                        output_path=final_output_path,
+                        output_schema_path=selected_output_schema,
+                        output_schema_logical_path=selected_output_schema_logical,
+                        selected_model=selected_model,
+                        prompt_text=prompt,
+                        prepared=prepared_benchmark_artifacts,
+                        debug_enabled=recipeimport_benchmark_debug,
+                        raw_model_output_text=raw_benchmark_output_text,
+                        stdout_tail=codex_stdout_tail,
+                        stderr_tail=codex_stderr_tail,
+                    )
+                except Exception as exc:
+                    raise WorkerRuntimeFailure(
+                        (
+                            "failed to persist recipeimport benchmark artifacts "
+                            f"for task {task['task_id']}: {exc}"
+                        ),
+                        failure_category="benchmark_artifact_write_error",
+                        stdout_tail=codex_stdout_tail,
+                        stderr_tail=codex_stderr_tail,
+                    ) from exc
+                transitioned = mark_task_done(
+                    conn,
+                    task_id=task["task_id"],
+                    output_path=str(final_output_path),
+                    lease_token=task_lease_token,
+                )
+                if not transitioned:
+                    continue
             throttle_before = get_run_throttle_state(conn, str(task["run_id"]))
             if throttle_before is not None:
                 now_epoch = time.time()
@@ -1063,6 +1229,8 @@ def worker_loop(
                     "codex_model": selected_model,
                     "codex_reasoning_effort": selected_effort,
                     "codex_cd_mode": codex_cd_mode,
+                    "recipeimport_benchmark_mode": recipeimport_benchmark_mode,
+                    "recipeimport_benchmark_debug": recipeimport_benchmark_debug,
                     "cd_dir": str(cd_dir),
                     "retry_after_seconds": exc.retry_after_seconds,
                     "cooldown_seconds": throttle_after.last_cooldown_seconds,
@@ -1131,7 +1299,9 @@ def worker_loop(
                 stderr_tail = exc.stderr_tail or codex_stderr_tail
             elif isinstance(exc, SchemaValidationError):
                 failure_stage = "schema_validation"
-                if str(exc).startswith("Invalid JSON at "):
+                if recipeimport_benchmark_mode == RECIPEIMPORT_BENCHMARK_MODE:
+                    failure_category = "benchmark_contract_error"
+                elif str(exc).startswith("Invalid JSON at "):
                     failure_category = "invalid_json"
                 else:
                     failure_category = "schema_validation"
@@ -1145,9 +1315,12 @@ def worker_loop(
 
             error_full = str(exc)
             error_message = _trim_error(error_full)
+            if failure_category == "benchmark_artifact_write_error":
+                final_output_path.unlink(missing_ok=True)
             terminal_failure = (
                 failure_category == "auth_failure"
                 or failure_category == "invalid_json_schema"
+                or failure_category == "benchmark_contract_error"
                 or effective_execution_attempt_index >= max_attempts
             )
             capture_worker_forensics(
@@ -1167,6 +1340,8 @@ def worker_loop(
                     "codex_model": selected_model,
                     "codex_reasoning_effort": selected_effort,
                     "codex_cd_mode": codex_cd_mode,
+                    "recipeimport_benchmark_mode": recipeimport_benchmark_mode,
+                    "recipeimport_benchmark_debug": recipeimport_benchmark_debug,
                     "cd_dir": str(cd_dir),
                     "max_attempts": max_attempts,
                     "heads_up_enabled": heads_up_enabled,

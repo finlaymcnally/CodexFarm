@@ -318,7 +318,7 @@ Behavior:
 - Optional `--heads-up-max-tips` caps appended tips (default `3`, min `1`, max `8`).
 - Runs login precheck by default (`codex login status`) before execution; bypass with `--no-login-precheck` or `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
 - Resolves Codex `--cd` via `_resolve_one_cd_dir`.
-- Renders prompt from template (`{{INPUT_PATH}}` substitution).
+- Renders prompt from template (`{{INPUT_PATH}}` and `{{INPUT_TEXT}}` substitutions are supported; required token is selected by pipeline `prompt_input_mode`).
 - When `--heads-up` is enabled, computes an input signature and appends matching `Heads up` tips before execution.
 - Runs Codex wrapper.
 - Validates output against schema.
@@ -355,6 +355,9 @@ Behavior:
 - Adds `codex_model` only when user passed `--model`.
 - Adds `codex_reasoning_effort` only when user passed an effort override.
 - Adds `output_schema_path_override` only when user passed `--output-schema`.
+- Adds `recipeimport_benchmark_mode` only when user passed `--recipeimport-benchmark-mode`.
+- Adds `recipeimport_benchmark_debug` only when user passed `--recipeimport-benchmark-debug`.
+- When `recipeimport_benchmark_mode=line_label_v1` is set, run creation dispatches to pipeline `recipeimport.benchmark.line_label.v1`.
 - Always persists `heads_up_enabled` and `heads_up_max_tips` for worker determinism.
 - Always persists `incremental_enabled` and `incremental_source_run_id` in run config for reproducibility.
 - Computes and stores `runs.execution_fingerprint` and can pre-materialize reused outputs before worker start.
@@ -376,6 +379,8 @@ Output:
   "codex_model": "resolved model string",
   "codex_reasoning_effort": "resolved effort string or null",
   "output_schema_path": "resolved schema path",
+  "recipeimport_benchmark_mode": "line_label_v1 or null",
+  "recipeimport_benchmark_debug": false,
   "heads_up_enabled": false,
   "heads_up_max_tips": 3,
   "incremental": {
@@ -592,6 +597,8 @@ Behavior:
 
 - Resolves root, workspace override, optional model override, optional effort override, and pipeline.
 - Resolves optional output-schema override (`--output-schema`).
+- Resolves optional recipeimport benchmark mode (`--recipeimport-benchmark-mode line_label_v1`) and debug capture toggle (`--recipeimport-benchmark-debug`).
+- When benchmark mode is enabled, process dispatches to pipeline `recipeimport.benchmark.line_label.v1`.
 - Runs login precheck by default (`codex login status`) before run creation; bypass with `--no-login-precheck` or `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
 - Optional `--incremental` enables planning-time reuse from the latest compatible prior run.
 - Optional `--incremental-from <run_id>` forces one source run and fails on incompatibility.
@@ -643,6 +650,8 @@ Output contract:
   "codex_model": "resolved model string",
   "codex_reasoning_effort": "resolved effort string or null",
   "output_schema_path": "resolved schema path",
+  "recipeimport_benchmark_mode": "line_label_v1 or null",
+  "recipeimport_benchmark_debug": false,
   "heads_up_enabled": false,
   "heads_up_max_tips": 3,
   "heads_up_tips_applied": 0,
@@ -711,6 +720,9 @@ Flow:
 - Optional `--model` persists run-level `codex_model` override for worker execution.
 - Optional effort aliases persist run-level `codex_reasoning_effort` override for worker execution.
 - Optional `--output-schema` persists run-level `output_schema_path_override` for worker execution.
+- Optional `--recipeimport-benchmark-mode line_label_v1` persists run-level benchmark mode for worker-side benchmark artifacts.
+- Optional `--recipeimport-benchmark-debug` persists run-level debug capture for benchmark artifacts.
+- When benchmark mode is enabled, go dispatches execution to pipeline `recipeimport.benchmark.line_label.v1`.
 - Optional `--heads-up`/`--heads-up-max-tips` persist run-level prompt-adaptation settings for worker execution.
 - Optional `--incremental` and `--incremental-from` persist incremental planning intent for run reproducibility.
 - Runs login precheck by default (`codex login status`) before run creation; bypass with `--no-login-precheck` or `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
@@ -733,6 +745,9 @@ Exit codes:
 - Persisted run config includes `codex_model` only when the user passes `--model`; workers honor this override instead of pipeline default.
 - Persisted run config includes `codex_reasoning_effort` only when the user passes effort aliases; workers honor this override instead of pipeline default.
 - Persisted run config includes `output_schema_path_override` only when the user passes `--output-schema`; workers honor this override instead of pipeline default schema.
+- Persisted run config includes `recipeimport_benchmark_mode` only when the user passes `--recipeimport-benchmark-mode`; workers use this to enable benchmark artifact generation.
+- Persisted run config includes `recipeimport_benchmark_debug` only when the user passes `--recipeimport-benchmark-debug`; workers use this to include raw prompt/response debug files in benchmark artifacts.
+- Benchmark mode `line_label_v1` is not just metadata: CLI run creation/processing routes to the benchmark pipeline ID `recipeimport.benchmark.line_label.v1`.
 - Persisted run config always includes `heads_up_enabled` and `heads_up_max_tips`; workers use those values to keep resume behavior deterministic.
 - Incremental reuse is planning-time only: workers still lease only queued/running tasks, and reused tasks start in `done`.
 - Reuse safety requires both `input_hash` equality and matching `runs.execution_fingerprint`; hash-only reuse is forbidden.

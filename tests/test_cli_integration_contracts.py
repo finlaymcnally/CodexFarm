@@ -16,6 +16,7 @@ from codex_farm.db import (
     mark_task_done,
     mark_task_error,
     open_db,
+    run_status,
     set_run_control_state,
     upsert_heads_up_tips,
 )
@@ -66,6 +67,77 @@ def _write_pipeline_pack(root: Path, pipeline_id: str) -> None:
         },
     }
     (root / schema_rel).write_text(json.dumps(schema_payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _write_benchmark_pipeline_pack(root: Path, pipeline_id: str) -> None:
+    for folder in ("pipelines", "prompts", "schemas"):
+        (root / folder).mkdir(parents=True, exist_ok=True)
+
+    slug = pipeline_id.replace(".", "_")
+    prompt_rel = Path("prompts") / f"{slug}.txt"
+    schema_rel = Path("schemas") / f"{slug}.schema.json"
+
+    pipeline_payload = {
+        "pipeline_id": pipeline_id,
+        "description": f"Benchmark pipeline {pipeline_id}",
+        "prompt_template_path": prompt_rel.as_posix(),
+        "output_schema_path": schema_rel.as_posix(),
+        "input_glob_default": "**/*.json",
+        "output_ext": ".json",
+        "codex_model": "gpt-5.3-codex-spark",
+        "codex_sandbox": "read-only",
+        "codex_ask_for_approval": "never",
+        "codex_web_search": "disabled",
+        "codex_timeout_seconds": 180,
+        "codex_cd_mode": "asset_root",
+    }
+    (root / "pipelines" / f"{pipeline_id}.json").write_text(
+        json.dumps(pipeline_payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (root / prompt_rel).write_text("Input file path: {{INPUT_PATH}}\n", encoding="utf-8")
+    (root / schema_rel).write_text(
+        json.dumps(
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["line_predictions"],
+                "properties": {
+                    "line_predictions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": [
+                                "line_index",
+                                "label",
+                                "confidence",
+                                "evidence_line_indices",
+                                "reasoning_tags",
+                            ],
+                            "properties": {
+                                "line_index": {"type": "integer", "minimum": 0},
+                                "label": {"type": "string", "minLength": 1},
+                                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                                "evidence_line_indices": {
+                                    "type": "array",
+                                    "items": {"type": "integer", "minimum": 0},
+                                },
+                                "reasoning_tags": {
+                                    "type": "array",
+                                    "items": {"type": "string", "minLength": 1},
+                                },
+                            },
+                        },
+                    }
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _write_heads_up_assets(root: Path) -> None:
@@ -1314,6 +1386,134 @@ def test_run_create_persists_model_override_in_run_config(tmp_path: Path) -> Non
     assert manifest_path.exists()
 
 
+def test_run_create_benchmark_mode_dispatches_to_benchmark_pipeline(
+    tmp_path: Path,
+) -> None:
+    pack = tmp_path / "pack"
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    data_dir = tmp_path / "var"
+    _write_pipeline_pack(pack, "demo.contract.v1")
+    _write_pipeline_pack(pack, "recipeimport.benchmark.line_label.v1")
+    input_dir.mkdir(parents=True)
+    (input_dir / "one.json").write_text("{}", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "create",
+            "--root",
+            str(pack),
+            "--pipeline",
+            "demo.contract.v1",
+            "--in",
+            str(input_dir),
+            "--out",
+            str(output_dir),
+            "--data-dir",
+            str(data_dir),
+            "--recipeimport-benchmark-mode",
+            "line_label_v1",
+            "--recipeimport-benchmark-debug",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["pipeline_id"] == "recipeimport.benchmark.line_label.v1"
+    assert payload["recipeimport_benchmark_mode"] == "line_label_v1"
+    assert payload["recipeimport_benchmark_debug"] is True
+    conn = open_db(data_dir / "codex_farm.sqlite3")
+    run = get_run(conn, payload["run_id"])
+    assert run["pipeline_id"] == "recipeimport.benchmark.line_label.v1"
+    config = json.loads(run["config_json"])
+    assert config["pipeline"] == "recipeimport.benchmark.line_label.v1"
+    assert config["recipeimport_benchmark_mode"] == "line_label_v1"
+    assert config["recipeimport_benchmark_debug"] is True
+
+
+def test_process_benchmark_mode_dispatches_to_benchmark_pipeline(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    pack = tmp_path / "pack"
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    data_dir = tmp_path / "var"
+    _write_pipeline_pack(pack, "demo.contract.v1")
+    _write_benchmark_pipeline_pack(pack, "recipeimport.benchmark.line_label.v1")
+    input_dir.mkdir(parents=True, exist_ok=True)
+    (input_dir / "one.json").write_text(
+        json.dumps(
+            {
+                "canonical_lines": [
+                    {"line_index": 0, "text": "Line zero", "expected_label": "title"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_run_codex_exec(**kwargs):
+        output_path = kwargs["output_path"]
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps(
+                {
+                    "line_predictions": [
+                        {
+                            "line_index": 0,
+                            "label": "title",
+                            "confidence": 0.95,
+                            "evidence_line_indices": [0],
+                            "reasoning_tags": ["header_line"],
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        return CodexExecResult(ok=True, exit_code=0, stderr_tail="")
+
+    monkeypatch.setattr("codex_farm.worker.run_codex_exec", fake_run_codex_exec)
+
+    result = runner.invoke(
+        app,
+        [
+            "process",
+            "--root",
+            str(pack),
+            "--pipeline",
+            "demo.contract.v1",
+            "--in",
+            str(input_dir),
+            "--out",
+            str(output_dir),
+            "--data-dir",
+            str(data_dir),
+            "--workers",
+            "1",
+            "--no-login-precheck",
+            "--recipeimport-benchmark-mode",
+            "line_label_v1",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["pipeline_id"] == "recipeimport.benchmark.line_label.v1"
+    assert payload["status"] == "done"
+    conn = open_db(data_dir / "codex_farm.sqlite3")
+    run = get_run(conn, payload["run_id"])
+    assert run["pipeline_id"] == "recipeimport.benchmark.line_label.v1"
+    run_config = json.loads(run["config_json"])
+    assert run_config["pipeline"] == "recipeimport.benchmark.line_label.v1"
+    assert run_config["recipeimport_benchmark_mode"] == "line_label_v1"
+
+
 def test_process_rejects_missing_output_schema(tmp_path: Path) -> None:
     pack = tmp_path / "pack"
     input_dir = tmp_path / "input"
@@ -1345,6 +1545,80 @@ def test_process_rejects_missing_output_schema(tmp_path: Path) -> None:
     assert "--output-schema must point to an existing JSON schema file:" in result.stderr
 
 
+def test_go_benchmark_mode_dispatches_to_benchmark_pipeline(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    pack = tmp_path / "pack"
+    data_dir = tmp_path / "var"
+    _write_pipeline_pack(pack, "demo.contract.v1")
+    _write_benchmark_pipeline_pack(pack, "recipeimport.benchmark.line_label.v1")
+
+    inbox = data_dir / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    (inbox / "one.json").write_text(
+        json.dumps(
+            {
+                "canonical_lines": [
+                    {"line_index": 0, "text": "Line zero", "expected_label": "title"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_run_codex_exec(**kwargs):
+        output_path = kwargs["output_path"]
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps(
+                {
+                    "line_predictions": [
+                        {
+                            "line_index": 0,
+                            "label": "title",
+                            "confidence": 0.95,
+                            "evidence_line_indices": [0],
+                            "reasoning_tags": ["header_line"],
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        return CodexExecResult(ok=True, exit_code=0, stderr_tail="")
+
+    monkeypatch.setattr("codex_farm.worker.run_codex_exec", fake_run_codex_exec)
+
+    result = runner.invoke(
+        app,
+        [
+            "go",
+            "--root",
+            str(pack),
+            "--data-dir",
+            str(data_dir),
+            "--recipeimport-benchmark-mode",
+            "line_label_v1",
+            "--no-login-precheck",
+        ],
+        input="1\n1\n",
+    )
+
+    assert result.exit_code == 0, result.stderr
+    conn = open_db(data_dir / "codex_farm.sqlite3")
+    rows = conn.execute("SELECT run_id FROM runs").fetchall()
+    assert len(rows) == 1
+    run_id = str(rows[0]["run_id"])
+    run = get_run(conn, run_id)
+    assert run["pipeline_id"] == "recipeimport.benchmark.line_label.v1"
+    run_config = json.loads(run["config_json"])
+    assert run_config["pipeline"] == "recipeimport.benchmark.line_label.v1"
+    assert run_config["recipeimport_benchmark_mode"] == "line_label_v1"
+    status = run_status(conn, run_id=run_id)
+    assert status["done"] == 1
+
+
 def test_process_rejects_invalid_reasoning_effort(tmp_path: Path) -> None:
     pack = tmp_path / "pack"
     input_dir = tmp_path / "input"
@@ -1373,6 +1647,36 @@ def test_process_rejects_invalid_reasoning_effort(tmp_path: Path) -> None:
 
     assert result.exit_code == 2
     assert "--reasoning-effort must be one of:" in result.stderr
+
+
+def test_process_rejects_invalid_recipeimport_benchmark_mode(tmp_path: Path) -> None:
+    pack = tmp_path / "pack"
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    pipeline_id = "demo.contract.v1"
+    _write_pipeline_pack(pack, pipeline_id)
+    input_dir.mkdir(parents=True)
+    (input_dir / "one.json").write_text("{}", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "process",
+            "--root",
+            str(pack),
+            "--pipeline",
+            pipeline_id,
+            "--in",
+            str(input_dir),
+            "--out",
+            str(output_dir),
+            "--recipeimport-benchmark-mode",
+            "unknown_mode",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "--recipeimport-benchmark-mode must be one of:" in result.stderr
 
 
 def test_run_create_json_contract(tmp_path: Path) -> None:

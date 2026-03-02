@@ -16,6 +16,7 @@ def _write_pipeline(
     pipeline_id: str,
     prompt_rel: str,
     schema_rel: str,
+    prompt_input_mode: str | None = None,
 ) -> None:
     payload = {
         "pipeline_id": pipeline_id,
@@ -31,6 +32,8 @@ def _write_pipeline(
         "codex_timeout_seconds": 180,
         "codex_cd_mode": "asset_root",
     }
+    if prompt_input_mode is not None:
+        payload["prompt_input_mode"] = prompt_input_mode
     (root / "pipelines" / filename).write_text(
         json.dumps(payload, indent=2) + "\n",
         encoding="utf-8",
@@ -120,6 +123,55 @@ def test_lint_pack_reports_missing_prompt_file(tmp_path: Path) -> None:
     assert report.error_count >= 1
 
 
+def test_lint_pack_reports_missing_inline_prompt_token(tmp_path: Path) -> None:
+    _make_pack_root(tmp_path)
+    _write_pipeline(
+        tmp_path,
+        filename="demo.inline.v1.json",
+        pipeline_id="demo.inline.v1",
+        prompt_rel="prompts/demo_inline_v1.txt",
+        schema_rel="schemas/demo_inline_v1.schema.json",
+        prompt_input_mode="inline",
+    )
+    (tmp_path / "prompts" / "demo_inline_v1.txt").write_text("INPUT={{INPUT_PATH}}\n", encoding="utf-8")
+    _write_json(tmp_path / "schemas" / "demo_inline_v1.schema.json", _demo_schema_payload())
+    _write_heads_up_assets(tmp_path)
+
+    report = lint_pack(root=tmp_path)
+
+    assert any(
+        finding.code == "pipeline.prompt_missing_required_token"
+        and finding.pipeline_id == "demo.inline.v1"
+        for finding in report.findings
+    )
+
+
+def test_lint_pack_accepts_inline_prompt_with_input_text_token(tmp_path: Path) -> None:
+    _make_pack_root(tmp_path)
+    _write_pipeline(
+        tmp_path,
+        filename="demo.inline.ok.v1.json",
+        pipeline_id="demo.inline.ok.v1",
+        prompt_rel="prompts/demo_inline_ok_v1.txt",
+        schema_rel="schemas/demo_inline_ok_v1.schema.json",
+        prompt_input_mode="inline",
+    )
+    (tmp_path / "prompts" / "demo_inline_ok_v1.txt").write_text(
+        "PAYLOAD={{INPUT_TEXT}}\n",
+        encoding="utf-8",
+    )
+    _write_json(tmp_path / "schemas" / "demo_inline_ok_v1.schema.json", _demo_schema_payload())
+    _write_heads_up_assets(tmp_path)
+
+    report = lint_pack(root=tmp_path)
+
+    assert not any(
+        finding.code == "pipeline.prompt_missing_required_token"
+        and finding.pipeline_id == "demo.inline.ok.v1"
+        for finding in report.findings
+    )
+
+
 def test_lint_pack_reports_duplicate_pipeline_ids(tmp_path: Path) -> None:
     _make_pack_root(tmp_path)
     _write_pipeline(
@@ -143,6 +195,28 @@ def test_lint_pack_reports_duplicate_pipeline_ids(tmp_path: Path) -> None:
     report = lint_pack(root=tmp_path)
 
     assert any(finding.code == "pipeline.duplicate_id" for finding in report.findings)
+
+
+def test_lint_pack_reports_missing_path_prompt_token_for_default_mode(tmp_path: Path) -> None:
+    _make_pack_root(tmp_path)
+    _write_pipeline(
+        tmp_path,
+        filename="demo.path.token.v1.json",
+        pipeline_id="demo.path.token.v1",
+        prompt_rel="prompts/demo_path_token_v1.txt",
+        schema_rel="schemas/demo_path_token_v1.schema.json",
+    )
+    (tmp_path / "prompts" / "demo_path_token_v1.txt").write_text("INPUT={{INPUT_TEXT}}\n", encoding="utf-8")
+    _write_json(tmp_path / "schemas" / "demo_path_token_v1.schema.json", _demo_schema_payload())
+    _write_heads_up_assets(tmp_path)
+
+    report = lint_pack(root=tmp_path)
+
+    assert any(
+        finding.code == "pipeline.prompt_missing_required_token"
+        and finding.pipeline_id == "demo.path.token.v1"
+        for finding in report.findings
+    )
 
 
 def test_lint_pack_reports_invalid_schema_json(tmp_path: Path) -> None:

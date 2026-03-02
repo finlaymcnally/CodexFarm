@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 CodexCdMode = Literal["asset_root", "input_dir", "input_file_dir"]
 CodexReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh"]
+PromptInputMode = Literal["path", "inline"]
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,7 @@ class PipelineSpec:
     codex_reasoning_effort: CodexReasoningEffort | None
     codex_timeout_seconds: int
     codex_cd_mode: CodexCdMode
+    prompt_input_mode: PromptInputMode
 
 
 class PipelineSpecModel(BaseModel):
@@ -49,6 +51,7 @@ class PipelineSpecModel(BaseModel):
     codex_reasoning_effort: CodexReasoningEffort | None = None
     codex_timeout_seconds: int = Field(default=180, ge=1)
     codex_cd_mode: CodexCdMode = "asset_root"
+    prompt_input_mode: PromptInputMode = "path"
 
     @field_validator("output_ext")
     @classmethod
@@ -105,6 +108,7 @@ def _to_spec(
         codex_reasoning_effort=model.codex_reasoning_effort,
         codex_timeout_seconds=model.codex_timeout_seconds,
         codex_cd_mode=model.codex_cd_mode,
+        prompt_input_mode=model.prompt_input_mode,
     )
 
 
@@ -128,6 +132,10 @@ def load_pipelines(pipelines_dir: Path) -> dict[str, PipelineSpec]:
 
 
 def render_prompt_template(template_path: Path, input_path: Path) -> str:
-    """Render a prompt template by replacing {{INPUT_PATH}}."""
+    """Render a prompt template by replacing supported input placeholders."""
     text = template_path.read_text(encoding="utf-8")
-    return text.replace("{{INPUT_PATH}}", str(input_path.resolve()))
+    rendered = text.replace("{{INPUT_PATH}}", str(input_path.resolve()))
+    if "{{INPUT_TEXT}}" in rendered:
+        input_text = input_path.read_text(encoding="utf-8")
+        rendered = rendered.replace("{{INPUT_TEXT}}", input_text)
+    return rendered

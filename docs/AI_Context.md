@@ -218,7 +218,7 @@ Main implementation modules:
 Asset/config folders:
 
 - `pipelines/` one JSON per operation
-- `prompts/` prompt templates with `{{INPUT_PATH}}`
+- `prompts/` prompt templates with `{{INPUT_PATH}}` (path mode) or `{{INPUT_TEXT}}` (inline mode)
 - `schemas/` JSON Schemas for Codex constrained output and local validation
 - `examples/` sample fixtures
 
@@ -323,7 +323,7 @@ Generated defaults include model/sandbox/timeout, `codex_cd_mode: "asset_root"`,
 Single-file processing path:
 
 1. resolve pipeline
-2. render prompt from template (`{{INPUT_PATH}}`)
+2. render prompt from template (`{{INPUT_PATH}}` and `{{INPUT_TEXT}}` supported)
 3. resolve `--cd`:
    - if `--workspace-root` is set, use it
    - else use pipeline `codex_cd_mode`
@@ -473,15 +473,16 @@ Runtime object:
 
 Prompt templates are plain text files.
 
-Substitution rule:
+Substitution rules:
 
 - replace every literal `{{INPUT_PATH}}` with absolute resolved input path string
+- replace every literal `{{INPUT_TEXT}}` with the full UTF-8 input file text
 
 No other templating exists (no conditional logic, no escaping, no variable map).
 
 AI implication:
 
-- if you add new placeholders, code must be changed; currently only `INPUT_PATH` is supported.
+- if you add new placeholders, code must be changed; currently `INPUT_PATH` and `INPUT_TEXT` are supported.
 
 ## 7) Path resolution and root discovery
 

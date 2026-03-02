@@ -2,6 +2,7 @@
   "pipeline_id": "recipe.schemaorg.to_proprietary.v1",
   "description": "Placeholder pipeline: convert Schema.org Recipe JSON into proprietary format once target schema is finalized.",
   "prompt_template_path": "prompts/recipe_schemaorg_to_proprietary_v1.txt",
+  "prompt_input_mode": "inline",
   "output_schema_path": "schemas/recipe_proprietary_placeholder_v1.schema.json",
   "input_glob_default": "**/*.json",
   "output_ext": ".json",

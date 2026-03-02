@@ -116,6 +116,9 @@ Each JSON file is parsed through `PipelineSpecModel`:
     - `"asset_root"`
     - `"input_dir"`
     - `"input_file_dir"`
+  - `prompt_input_mode`: `"path"` with allowed values:
+    - `"path"`
+    - `"inline"`
 
 After field validation, prompt/schema paths are resolved relative to `pipelines_dir.parent` and must exist on disk.
 
@@ -125,15 +128,22 @@ All validation/load errors are re-raised as:
 
 - `ValueError("Invalid pipeline file <path>: <details>")`
 
-Lint reuses the same field validation via `parse_pipeline_model_file(...)`, then separately classifies missing prompt/schema assets and outside-pack path escapes as explicit finding codes.
+Lint reuses the same field validation via `parse_pipeline_model_file(...)`, then separately classifies missing prompt/schema assets, outside-pack path escapes, and prompt-token contract mismatches as explicit finding codes.
 
 ## Prompt template rendering contract
 
-`render_prompt_template(template_path, input_path)` does one substitution only:
+`render_prompt_template(template_path, input_path)` supports two deterministic substitutions:
 
 - Replaces every `{{INPUT_PATH}}` literal with the absolute resolved input file path.
+- Replaces every `{{INPUT_TEXT}}` literal with full UTF-8 input file contents.
 
 There is no general template engine. If you need more placeholders, code changes are required.
+
+Pipeline prompt mode contract:
+
+- `prompt_input_mode: "path"` requires `{{INPUT_PATH}}` in the prompt template.
+- `prompt_input_mode: "inline"` requires `{{INPUT_TEXT}}` in the prompt template.
+- `codex-farm lint` reports `pipeline.prompt_missing_required_token` when the prompt token does not match the configured mode.
 
 Prompt-adjustment extension rule:
 

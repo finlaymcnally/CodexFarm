@@ -30,3 +30,13 @@ def test_recipeimport_final_examples_validate() -> None:
             json_path=example_path,
             schema_path=schema_path,
         )
+
+
+def test_recipeimport_benchmark_line_label_example_validates() -> None:
+    repo_root = find_repo_root()
+    schema_path = repo_root / "schemas" / "recipeimport_benchmark_line_label_v1.schema.json"
+    example_path = repo_root / "examples" / "recipeimport_benchmark" / "line_label_predictions.example.json"
+    validate_json_file_against_schema(
+        json_path=example_path,
+        schema_path=schema_path,
+    )

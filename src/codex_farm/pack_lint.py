@@ -26,6 +26,8 @@ _HEADS_UP_OPTIONAL_ASSETS = (
     Path("prompts/heads_up_distiller_v1.txt"),
     Path("schemas/heads_up_tipset_v1.schema.json"),
 )
+_PATH_MODE_PROMPT_TOKEN = "{{INPUT_PATH}}"
+_INLINE_MODE_PROMPT_TOKEN = "{{INPUT_TEXT}}"
 
 
 @dataclass(frozen=True)
@@ -283,6 +285,13 @@ def _lint_pipeline_file(
         asset_rel_path=model.output_schema_path,
         asset_abs_path=output_schema_path,
     )
+    _lint_prompt_template_contract(
+        findings=findings,
+        pipeline_file=pipeline_file,
+        pipeline_id=pipeline_id,
+        prompt_path=prompt_path,
+        prompt_input_mode=model.prompt_input_mode,
+    )
 
     schema_discovery: tuple[Path, str] | None = None
     if output_schema_path.exists() and output_schema_path.is_file():
@@ -329,6 +338,58 @@ def _lint_pipeline_asset_path(
                 hint=f"Create the file or fix {asset_label.replace(' ', '_')} path.",
             )
         )
+
+
+def _lint_prompt_template_contract(
+    *,
+    findings: list[LintFinding],
+    pipeline_file: Path,
+    pipeline_id: str,
+    prompt_path: Path,
+    prompt_input_mode: str,
+) -> None:
+    if not prompt_path.exists() or not prompt_path.is_file():
+        return
+
+    try:
+        prompt_text = prompt_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        findings.append(
+            LintFinding(
+                code="pipeline.unreadable_prompt_template",
+                severity="error",
+                path=str(pipeline_file),
+                pipeline_id=pipeline_id,
+                message=f"Prompt template could not be read: {exc}",
+                hint="Ensure the prompt template file is readable UTF-8 text.",
+            )
+        )
+        return
+
+    required_token = (
+        _INLINE_MODE_PROMPT_TOKEN
+        if prompt_input_mode == "inline"
+        else _PATH_MODE_PROMPT_TOKEN
+    )
+    if required_token in prompt_text:
+        return
+
+    findings.append(
+        LintFinding(
+            code="pipeline.prompt_missing_required_token",
+            severity="error",
+            path=str(pipeline_file),
+            pipeline_id=pipeline_id,
+            message=(
+                "Prompt template does not include the required placeholder token "
+                f"for prompt_input_mode '{prompt_input_mode}': {required_token}"
+            ),
+            hint=(
+                "Add the required placeholder token to the prompt template "
+                "or change prompt_input_mode."
+            ),
+        )
+    )
 
 
 def _lint_heads_up_assets(*, root: Path, missing_sentinels: list[str]) -> list[LintFinding]:

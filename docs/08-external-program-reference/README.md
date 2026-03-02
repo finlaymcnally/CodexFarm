@@ -18,7 +18,8 @@ Use this folder when another app or script drives `codex-farm` via CLI and JSON 
 5. `failure-forensics-contracts.md` for `run forensics --json`, bundle layout, and metadata fields.
 6. `progress-contracts.md` for spinner/progress snapshot/event contracts (`run progress`, `process --progress-events`).
 7. `telemetry-contracts.md` for machine-readable telemetry fields used for prompt tuning and failure analysis.
-8. `08-external-program-reference_log.md` for historical contract decisions and prior failure paths.
+8. `benchmark-runtime-contracts.md` for recipeimport benchmark mode flags and artifact layout.
+9. `08-external-program-reference_log.md` for historical contract decisions and prior failure paths.
 
 ## Caller contract highlights
 
@@ -31,6 +32,9 @@ Use this folder when another app or script drives `codex-farm` via CLI and JSON 
 - Structured output:
   - `--output-schema` is supported on `one`, `run create`, `process`, and `go`.
   - run-based commands persist `output_schema_path_override` so queued worker retries use the same schema.
+- Benchmark mode:
+  - run-based commands accept `--recipeimport-benchmark-mode line_label_v1` and optional `--recipeimport-benchmark-debug`.
+  - completed benchmark tasks emit deterministic artifacts under `<run output>/.recipeimport-benchmark/<task_id>/`.
 - Read-only linting:
   - `codex-farm lint --json` is the machine-facing preflight endpoint for pack/schema diagnostics.
   - `--strict` only changes exit behavior; finding severities stay unchanged.

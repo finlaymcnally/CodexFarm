@@ -1,0 +1,15 @@
+{
+  "pipeline_id": "recipeimport.benchmark.line_label.v1",
+  "description": "Benchmark-native recipeimport mode: predict one canonical label per input line.",
+  "prompt_template_path": "prompts/recipeimport_benchmark_line_label_v1.txt",
+  "prompt_input_mode": "inline",
+  "output_schema_path": "schemas/recipeimport_benchmark_line_label_v1.schema.json",
+  "input_glob_default": "**/*.json",
+  "output_ext": ".json",
+  "codex_model": "gpt-5.3-codex-spark",
+  "codex_sandbox": "read-only",
+  "codex_ask_for_approval": "never",
+  "codex_web_search": "disabled",
+  "codex_timeout_seconds": 180,
+  "codex_cd_mode": "asset_root"
+}

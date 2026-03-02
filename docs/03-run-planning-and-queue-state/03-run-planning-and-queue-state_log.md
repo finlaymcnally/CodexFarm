@@ -56,7 +56,7 @@ read_when:
 ## 2026-02-28_09.32.28 - Prompt-adjustment seam without queue-schema changes
 
 - Source: merged historical notes.
-- Recorded current prompt seam: `render_prompt_template(...)` remains the template entrypoint and currently only substitutes `{{INPUT_PATH}}`.
+- Recorded current prompt seam: `render_prompt_template(...)` remains the template entrypoint and now substitutes both `{{INPUT_PATH}}` and `{{INPUT_TEXT}}` according to pipeline mode.
 - Captured extension rule: new adaptive prompt toggles should persist in `runs.config_json` and be consumed at worker execution time.
 - Preserved queue contract: prompt adaptation should not require `tasks` schema changes.
 - Logged determinism warning: same-run adaptation is lease-order dependent under concurrent workers; prior-run adaptation is deterministic.

@@ -9,6 +9,10 @@ Run lifecycle controls now exist in DB/CLI/worker (`run pause|resume|cancel|retr
 `cli.py` now also exposes spinner-facing progress APIs: `run progress --json` (snapshot/watch polling) and optional `process --progress-events` stderr JSON events prefixed with `__codex_farm_progress__ `.
 `cli.py` supports model/effort/schema overrides on `one`, `run create`, `process`, and `go`; run-based flows persist `codex_model`, `codex_reasoning_effort`, and optional `output_schema_path_override` in run config so workers use the same execution settings and validation contract across resumes.
 `run_assets.py` freezes effective pipeline + prompt + schema files per run under `<data_dir>/run_assets/<run_id>/`; worker execution is snapshot-first when `runs.config_json.frozen_assets` is present.
+`pipeline_spec.py` supports prompt placeholders `{{INPUT_PATH}}` and `{{INPUT_TEXT}}`; pipeline packs can choose required prompt token via `prompt_input_mode` (`path` default, `inline` optional), and `pack_lint.py` enforces that contract.
+`recipeimport_benchmark_line_label.py`, `recipeimport_benchmark_calibration.py`, and `recipeimport_benchmark_eval.py` implement `--recipeimport-benchmark-mode line_label_v1`, including per-task benchmark artifacts under `<run output>/.recipeimport-benchmark/<task_id>/`.
+In benchmark mode, schema validation failures are categorized as terminal `benchmark_contract_error` after calibration (no retry loop for unrecoverable contract mismatches).
+Benchmark `alignment_coverage` in `pass.metrics.json` reflects observed pre-fill model coverage (`observed_lines / total_lines`), while calibrated output remains one row per canonical line.
 `pack_lint.py` powers `codex-farm lint` for read-only pack/schema preflight with deterministic error/warning findings and machine-parseable JSON output.
 `cli.py` also exposes `heads-up` commands plus `--heads-up`/`--heads-up-max-tips` run settings so prompts can include learned guidance from prior runs.
 `heads_up.py` handles input signatures, prompt block rendering, one-shot post-run distillation, and SQLite tip scoring metadata.

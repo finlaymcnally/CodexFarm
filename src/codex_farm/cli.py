@@ -77,6 +77,10 @@ from .worker import worker_loop
 
 TASK_STATUS_VALUES = ("queued", "running", "done", "error", "canceled")
 CODEX_REASONING_EFFORT_VALUES = ("none", "minimal", "low", "medium", "high", "xhigh")
+RECIPEIMPORT_BENCHMARK_MODE_VALUES = ("line_label_v1",)
+RECIPEIMPORT_BENCHMARK_MODE_PIPELINE = {
+    "line_label_v1": "recipeimport.benchmark.line_label.v1",
+}
 TELEMETRY_STATUS_VALUES = ("ok", "failed", "timeout", "other")
 PROGRESS_EVENT_PREFIX = "__codex_farm_progress__ "
 TERMINAL_RUN_STATUSES = {"done", "error", "canceled"}
@@ -215,6 +219,34 @@ def _resolve_telemetry_status_filter_or_die(value: str | None) -> str | None:
         allowed = ", ".join(TELEMETRY_STATUS_VALUES)
         raise typer.BadParameter(f"--status must be one of: {allowed}")
     return normalized
+
+
+def _resolve_recipeimport_benchmark_mode_or_die(
+    value: str | None,
+) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    if normalized not in RECIPEIMPORT_BENCHMARK_MODE_VALUES:
+        allowed = ", ".join(RECIPEIMPORT_BENCHMARK_MODE_VALUES)
+        raise typer.BadParameter(
+            f"--recipeimport-benchmark-mode must be one of: {allowed}"
+        )
+    return normalized
+
+
+def _resolve_pipeline_for_benchmark_mode(
+    *,
+    selected_pipeline_id: str,
+    benchmark_mode: str | None,
+    farm_root: Path,
+) -> PipelineSpec:
+    if benchmark_mode is None:
+        return _get_pipeline_or_die(selected_pipeline_id, farm_root=farm_root)
+    benchmark_pipeline_id = RECIPEIMPORT_BENCHMARK_MODE_PIPELINE[benchmark_mode]
+    return _get_pipeline_or_die(benchmark_pipeline_id, farm_root=farm_root)
 
 
 def _resolve_one_cd_dir(
@@ -1561,6 +1593,16 @@ def run_create_command(
         "--output-schema",
         help="Output schema path override (defaults to pipeline output_schema_path).",
     ),
+    recipeimport_benchmark_mode: str | None = typer.Option(
+        None,
+        "--recipeimport-benchmark-mode",
+        help="Recipeimport benchmark mode override (supported: line_label_v1).",
+    ),
+    recipeimport_benchmark_debug: bool = typer.Option(
+        False,
+        "--recipeimport-benchmark-debug",
+        help="Capture raw prompt/response debug artifacts for benchmark mode.",
+    ),
     heads_up: bool = typer.Option(
         False,
         "--heads-up",
@@ -1591,7 +1633,14 @@ def run_create_command(
     effort_override = _resolve_reasoning_effort_override_or_die(reasoning_effort)
     workspace_override = _resolve_workspace_root_override_or_die(workspace_root)
     output_schema_override = _resolve_output_schema_override_or_die(output_schema)
-    spec = _get_pipeline_or_die(pipeline, farm_root=farm_root)
+    benchmark_mode_override = _resolve_recipeimport_benchmark_mode_or_die(
+        recipeimport_benchmark_mode
+    )
+    spec = _resolve_pipeline_for_benchmark_mode(
+        selected_pipeline_id=pipeline,
+        benchmark_mode=benchmark_mode_override,
+        farm_root=farm_root,
+    )
     selected_model = model_override if model_override is not None else spec.codex_model
     selected_effort = (
         effort_override
@@ -1605,7 +1654,7 @@ def run_create_command(
     input_dir_resolved = in_dir.resolve()
     output_dir_resolved = out_dir.resolve()
     config = {
-        "pipeline": pipeline,
+        "pipeline": spec.pipeline_id,
         "in": str(input_dir_resolved),
         "out": str(output_dir_resolved),
         "glob": glob_pattern,
@@ -1621,6 +1670,10 @@ def run_create_command(
         config["codex_reasoning_effort"] = effort_override
     if output_schema_override is not None:
         config["output_schema_path_override"] = str(output_schema_override)
+    if benchmark_mode_override is not None:
+        config["recipeimport_benchmark_mode"] = benchmark_mode_override
+    if recipeimport_benchmark_debug:
+        config["recipeimport_benchmark_debug"] = True
     run_id, task_count, incremental_summary = _create_run_for_paths(
         pipeline=spec,
         input_dir=input_dir_resolved,
@@ -1648,6 +1701,8 @@ def run_create_command(
         "codex_model": selected_model,
         "codex_reasoning_effort": selected_effort,
         "output_schema_path": str(selected_output_schema),
+        "recipeimport_benchmark_mode": benchmark_mode_override,
+        "recipeimport_benchmark_debug": recipeimport_benchmark_debug,
         "heads_up_enabled": heads_up,
         "heads_up_max_tips": heads_up_max_tips,
         "incremental": incremental_summary,
@@ -2236,6 +2291,16 @@ def process_command(
         "--output-schema",
         help="Output schema path override (defaults to pipeline output_schema_path).",
     ),
+    recipeimport_benchmark_mode: str | None = typer.Option(
+        None,
+        "--recipeimport-benchmark-mode",
+        help="Recipeimport benchmark mode override (supported: line_label_v1).",
+    ),
+    recipeimport_benchmark_debug: bool = typer.Option(
+        False,
+        "--recipeimport-benchmark-debug",
+        help="Capture raw prompt/response debug artifacts for benchmark mode.",
+    ),
     heads_up: bool = typer.Option(
         False,
         "--heads-up",
@@ -2299,7 +2364,14 @@ def process_command(
     effort_override = _resolve_reasoning_effort_override_or_die(reasoning_effort)
     workspace_override = _resolve_workspace_root_override_or_die(workspace_root)
     output_schema_override = _resolve_output_schema_override_or_die(output_schema)
-    spec = _get_pipeline_or_die(pipeline, farm_root=farm_root)
+    benchmark_mode_override = _resolve_recipeimport_benchmark_mode_or_die(
+        recipeimport_benchmark_mode
+    )
+    spec = _resolve_pipeline_for_benchmark_mode(
+        selected_pipeline_id=pipeline,
+        benchmark_mode=benchmark_mode_override,
+        farm_root=farm_root,
+    )
     selected_glob = glob_pattern or spec.input_glob_default
     selected_model = model_override if model_override is not None else spec.codex_model
     selected_effort = (
@@ -2315,7 +2387,7 @@ def process_command(
     input_dir_resolved = in_dir.resolve()
     output_dir_resolved = out_dir.resolve()
     config = {
-        "pipeline": pipeline,
+        "pipeline": spec.pipeline_id,
         "in": str(input_dir_resolved),
         "out": str(output_dir_resolved),
         "glob": selected_glob,
@@ -2332,6 +2404,10 @@ def process_command(
         config["codex_reasoning_effort"] = effort_override
     if output_schema_override is not None:
         config["output_schema_path_override"] = str(output_schema_override)
+    if benchmark_mode_override is not None:
+        config["recipeimport_benchmark_mode"] = benchmark_mode_override
+    if recipeimport_benchmark_debug:
+        config["recipeimport_benchmark_debug"] = True
 
     run_id, task_count, incremental_summary = _create_run_for_paths(
         pipeline=spec,
@@ -2441,6 +2517,8 @@ def process_command(
             "codex_model": selected_model,
             "codex_reasoning_effort": selected_effort,
             "output_schema_path": str(selected_output_schema),
+            "recipeimport_benchmark_mode": benchmark_mode_override,
+            "recipeimport_benchmark_debug": recipeimport_benchmark_debug,
             "heads_up_enabled": heads_up,
             "heads_up_max_tips": heads_up_max_tips,
             "heads_up_tips_applied": heads_up_tips_applied,
@@ -2503,6 +2581,16 @@ def go_command(
         "--output-schema",
         help="Output schema path override (defaults to selected pipeline output_schema_path).",
     ),
+    recipeimport_benchmark_mode: str | None = typer.Option(
+        None,
+        "--recipeimport-benchmark-mode",
+        help="Recipeimport benchmark mode override (supported: line_label_v1).",
+    ),
+    recipeimport_benchmark_debug: bool = typer.Option(
+        False,
+        "--recipeimport-benchmark-debug",
+        help="Capture raw prompt/response debug artifacts for benchmark mode.",
+    ),
     heads_up: bool = typer.Option(
         False,
         "--heads-up",
@@ -2538,6 +2626,9 @@ def go_command(
     effort_override = _resolve_reasoning_effort_override_or_die(reasoning_effort)
     workspace_override = _resolve_workspace_root_override_or_die(workspace_root)
     output_schema_override = _resolve_output_schema_override_or_die(output_schema)
+    benchmark_mode_override = _resolve_recipeimport_benchmark_mode_or_die(
+        recipeimport_benchmark_mode
+    )
     data_dir_resolved = resolve_data_dir(data_dir)
     _init_data_dir(data_dir_resolved)
 
@@ -2565,7 +2656,11 @@ def go_command(
     except ValueError as exc:
         raise typer.BadParameter("Worker count must be an integer") from exc
 
-    selected = pipelines[selected_idx - 1]
+    selected = _resolve_pipeline_for_benchmark_mode(
+        selected_pipeline_id=pipelines[selected_idx - 1].pipeline_id,
+        benchmark_mode=benchmark_mode_override,
+        farm_root=farm_root,
+    )
     selected_model = model_override if model_override is not None else selected.codex_model
     selected_effort = (
         effort_override
@@ -2600,6 +2695,10 @@ def go_command(
         config["codex_reasoning_effort"] = effort_override
     if output_schema_override is not None:
         config["output_schema_path_override"] = str(output_schema_override)
+    if benchmark_mode_override is not None:
+        config["recipeimport_benchmark_mode"] = benchmark_mode_override
+    if recipeimport_benchmark_debug:
+        config["recipeimport_benchmark_debug"] = True
 
     run_id, task_count, incremental_summary = _create_run_for_paths(
         pipeline=selected,
