@@ -101,9 +101,13 @@ Use this only when Linux Chromium does not show up in WSLg.
 - The smoke scripts use `https://chatgpt.com/?temporary-chat=true` to reduce stale-draft/duplicate-popup issues.
 - The wrapper defaults `ORACLE_BROWSER_STRICT_ATTACHMENT_ACK=0` to avoid false attachment-ack failures.
 - The wrapper defaults `ORACLE_BROWSER_MANUAL_LOGIN=1` (manual-login profile reuse).
+- Temporary operator preference (2026-03-02): browser visibility is locked on in `/home/mcnal/.local/bin/oracle-browser-headless` (no headless/minimized launch via wrapper) until explicitly reverted.
+- The wrapper now guards against duplicate browser relaunches: if a live session with the same prompt/model/files is detected, it reattaches (`oracle session <id> --render`) instead of launching again.
+- Use `--allow-duplicate-run` (or `ORACLE_BROWSER_DUPLICATE_GUARD=0`) only when you intentionally want a fresh duplicate run.
 - Use `./oracle/cleanup-stale.sh` before manual runs if a previous run got stuck.
 - Use `./oracle/seed-profile-from-global.sh` to initialize repo-local profile from global profile.
 - Smoke scripts hard-timeout at 120s; slower than that is treated as a broken run.
+- Visible browser mode is currently forced by wrapper policy (see note above).
 
 ## Known Failures and Exact Fixes
 
