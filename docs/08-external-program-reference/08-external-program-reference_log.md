@@ -7,6 +7,18 @@ read_when:
 
 # 08 External Program Reference Log
 
+## 2026-03-02_00.52.58 - Caller-facing login precheck contract
+
+- Source: repeated integration runs failed only after queueing work because local Codex login was missing.
+- Added execution precheck contract: `one`, `worker`, `process`, and `go` now run `codex login status` before execution by default.
+- Locked explicit bypasses for orchestrators: `--no-login-precheck` and env `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
+
+## 2026-03-01_20.40.00 - Spinner/progress contracts for external callers
+
+- Source: RecipeImport integration request for richer spinner/progress state.
+- Added `progress-contracts.md` documenting `run progress --json` snapshots/watch mode and `process --progress-events` stderr event stream.
+- Locked stream-safety rule: `process --json` stdout remains single-payload JSON; machine progress events are opt-in and stderr-prefixed.
+
 ## 2026-02-28_17.30.33 - External lint preflight contract
 
 - Source: merged understanding note (`2026-02-28_12.30.33`).

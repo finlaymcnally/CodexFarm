@@ -16,8 +16,9 @@ Use this folder when another app or script drives `codex-farm` via CLI and JSON 
 3. `lint-contracts.md` for read-only pack/schema preflight and finding-code contracts.
 4. `incremental-runs.md` for `--incremental` / `--incremental-from` and reuse summary contracts.
 5. `failure-forensics-contracts.md` for `run forensics --json`, bundle layout, and metadata fields.
-6. `telemetry-contracts.md` for machine-readable telemetry fields used for prompt tuning and failure analysis.
-7. `08-external-program-reference_log.md` for historical contract decisions and prior failure paths.
+6. `progress-contracts.md` for spinner/progress snapshot/event contracts (`run progress`, `process --progress-events`).
+7. `telemetry-contracts.md` for machine-readable telemetry fields used for prompt tuning and failure analysis.
+8. `08-external-program-reference_log.md` for historical contract decisions and prior failure paths.
 
 ## Caller contract highlights
 
@@ -38,9 +39,13 @@ Use this folder when another app or script drives `codex-farm` via CLI and JSON 
   - JSON payloads include an additive `incremental` object with reuse counts and fallback reasons.
   - `run tasks --json` exposes reuse provenance per task (`reused`, `reused_from_run_id`, `reused_from_task_id`).
 - Machine-safe outputs:
+  - execution commands (`one`, `worker`, `process`, `go`) run login precheck by default (`codex login status`).
+  - callers can bypass precheck intentionally with `--no-login-precheck` or env `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
   - `process --json` keeps stdout parseable (single JSON payload).
+  - `process --progress-events` adds machine-readable stderr event lines prefixed with `__codex_farm_progress__ `.
   - lifecycle controls are machine-addressable: `run pause|resume|cancel|retry-errors --json`.
   - `run status --json` and `process --json` include `control_state` and `counts.canceled`.
+  - `run progress --json` is the spinner-friendly snapshot endpoint (with optional `--watch` polling stream).
   - inspect terminal failures with `run errors --json`; inspect per-task states with `run tasks --json`.
   - inspect failed-attempt evidence indexes with `run forensics --json`; `one` failure output may include `Forensics bundle: <abs path>` on stderr.
 

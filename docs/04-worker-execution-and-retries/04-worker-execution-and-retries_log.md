@@ -6,6 +6,12 @@ read_when:
 
 # 04 Worker Execution And Retries Log
 
+## 2026-03-02_00.45.23 - Immediate terminal handling for Codex auth failures
+
+- Source: RecipeImport incident where all tasks retried despite websocket `403 Forbidden` auth failure.
+- Worker runtime classification now treats Codex auth/session failures as `failure_category="auth_failure"` instead of generic retryable runtime failures.
+- Locked policy: auth failures become terminal on first effective execution attempt with remediation text (`run codex and sign in`), preventing wasted retry loops.
+
 ## 2026-02-28_14.03.46 - Heartbeat reclaim jitter hardening
 
 - Source: flaky test triage (`tests/test_worker.py::test_worker_heartbeat_prevents_lease_reclaim_for_long_running_task`).

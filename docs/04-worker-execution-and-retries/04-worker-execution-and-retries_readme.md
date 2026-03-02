@@ -110,7 +110,7 @@ Handled inside `worker_loop`:
 - Retryable failure classes:
   - `CodexExecTimeoutError`
   - `SchemaValidationError`
-  - `RuntimeError` raised when Codex subprocess result is not OK (except detected rate limits)
+  - `RuntimeError` raised when Codex subprocess result is not OK (except detected rate limits or auth failures)
   - unexpected exceptions (fallback branch)
 - Retry context is attempt-aware:
   - queue leasing now carries a `previous_error` snapshot from the prior task row.
@@ -132,6 +132,9 @@ Handled inside `worker_loop`:
   - invalid/missing/tampered `frozen_assets` snapshot for snapshot-bearing runs
   - computed `cd_dir` does not exist
   - execution-attempt budget already exhausted before processing (`effective_execution_attempts_before >= max_attempts`)
+- Terminal without retry (execution-time auth failure):
+  - Codex stderr/stdout matches auth/session failure signatures (`401/403`, `backend-api/codex/responses`, login-required text)
+  - worker records `failure_category="auth_failure"` and marks the task `error` immediately with remediation text
 
 Forensics capture contract:
 

@@ -64,6 +64,15 @@ _RATE_LIMIT_PATTERN = re.compile(
     r"\b429\b|too many requests|rate[ -]?limit(?:ed|ing)?",
     re.IGNORECASE,
 )
+_AUTH_FAILURE_PATTERN = re.compile(
+    r"\b(?:401|403)\b[^\n]{0,100}\b(?:unauthoriz(?:ed|ation)|forbidden)\b"
+    r"|backend-api/codex/responses"
+    r"|not\s+(?:logged|signed)\s+in"
+    r"|sign\s+in\s+with\s+chatgpt"
+    r"|auth(?:entication|orization)\s+(?:failed|required)"
+    r"|login\s+required",
+    re.IGNORECASE,
+)
 _RETRY_AFTER_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"(?:retry(?:ing)?\s+after|retry-?after[:=\s]+)\s*(\d+)\s*(seconds?|secs?|s|minutes?|mins?|m)?",
@@ -81,6 +90,13 @@ def is_rate_limit_message(text: str) -> bool:
     if not text:
         return False
     return _RATE_LIMIT_PATTERN.search(text) is not None
+
+
+def is_auth_failure_message(text: str) -> bool:
+    """Return True when stderr/stdout text indicates auth/login failure."""
+    if not text:
+        return False
+    return _AUTH_FAILURE_PATTERN.search(text) is not None
 
 
 def extract_retry_after_seconds(text: str) -> int | None:

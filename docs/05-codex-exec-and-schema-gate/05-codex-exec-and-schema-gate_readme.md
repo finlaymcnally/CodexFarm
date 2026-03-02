@@ -48,6 +48,7 @@ Output from this chunk:
 
 - `CodexExecResult` (`ok`, `exit_code`, `stderr_tail`, `stdout_tail`) or timeout exception.
 - `is_rate_limit_message(...)` helper for classifying stderr/stdout tails that indicate API rate limiting (`429`/rate-limit text).
+- `is_auth_failure_message(...)` helper for classifying stderr/stdout tails that indicate auth/session failures (`401/403`, login-required text, websocket auth denial).
 - `extract_retry_after_seconds(...)` helper for parsing explicit provider retry hints used by adaptive worker cooldown policy.
 - Parsed JSON payload on schema success.
 - `SchemaValidationError` on JSON/schema failure.
@@ -131,13 +132,15 @@ Checks:
 
 1. Python version >= 3.11.
 2. `codex` executable exists and `codex --version` succeeds.
-3. Non-interactive smoke call: `codex --ask-for-approval never exec --skip-git-repo-check --sandbox read-only --model gpt-5.3-codex-spark "Reply with exactly: OK"`.
+3. Login status check: `codex login status` must indicate logged-in session.
+4. Non-interactive smoke call: `codex --ask-for-approval never exec --skip-git-repo-check --sandbox read-only --model gpt-5.3-codex-spark "Reply with exactly: OK"`.
 
 Smoke success rule is intentionally tolerant:
 
 - Success if return code is 0, OR stdout contains an exact line `OK`.
 
 This avoids false failures when Codex prints expected output but exits non-zero because of local warnings.
+When login-status check fails, smoke is skipped to keep failure diagnostics focused on auth/session setup first.
 
 ## 5) Integration with CLI and worker
 
@@ -186,6 +189,7 @@ Together they are the practical debugging contract for why outputs were accepted
 - A non-zero Codex exit can still produce an accepted payload.
 - Task success in worker mode requires both: accepted payload file and local schema pass.
 - Timeout cleanup removes temp output before caller retry logic; timeout raw payload retention is therefore metadata/tail-based unless codex-exec timeout behavior changes.
+- Auth/login failure detection is text-based (`is_auth_failure_message(...)`) and is consumed by callers (`worker`, `one`) for remediation messaging and terminal/non-retry policy.
 - Run-level model overrides are resolved in CLI/worker before this chunk; `run_codex_exec` should keep treating `model` as the final resolved value.
 - Run-level effort overrides are resolved in CLI/worker before this chunk; `run_codex_exec` should keep treating `reasoning_effort` as the final resolved value.
 - Run-level schema overrides are resolved in CLI/worker before this chunk; `run_codex_exec` should keep treating `output_schema` as the final resolved path.

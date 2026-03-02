@@ -567,6 +567,82 @@ def test_worker_loop_includes_previous_error_in_retry_prompt(
     assert tasks[0]["execution_attempts"] == 2
 
 
+def test_worker_loop_marks_auth_failure_terminal_without_retry(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repo_root = find_repo_root()
+    pipelines = load_pipelines(repo_root / "pipelines")
+    spec = pipelines["recipe.schemaorg.normalize.v1"]
+
+    input_dir = tmp_path / "in"
+    output_dir = tmp_path / "out"
+    data_dir = tmp_path / "var"
+    input_dir.mkdir(parents=True)
+    output_dir.mkdir(parents=True)
+    data_dir.mkdir(parents=True)
+
+    input_path = input_dir / "r1.json"
+    input_path.write_text(json.dumps({"name": "Needs auth"}), encoding="utf-8")
+
+    conn = open_db(data_dir / "codex_farm.sqlite3")
+    init_db(conn)
+    run_id = create_run(
+        conn,
+        pipeline_id=spec.pipeline_id,
+        input_dir=str(input_dir),
+        glob="**/*.json",
+        output_dir=str(output_dir),
+        config={"farm_root": str(repo_root)},
+    )
+    enqueue_tasks_for_run(
+        conn,
+        run_id=run_id,
+        input_files=[input_path],
+        input_root=input_dir,
+        output_root=output_dir,
+        output_ext=spec.output_ext,
+    )
+
+    call_count = 0
+
+    def fake_run_codex_exec(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        return CodexExecResult(
+            ok=False,
+            exit_code=1,
+            stderr_tail=(
+                "WARNING: no last agent message. "
+                "WebSocket error: HTTP 403 Forbidden "
+                "wss://chatgpt.com/backend-api/codex/responses"
+            ),
+        )
+
+    monkeypatch.setattr("codex_farm.worker.run_codex_exec", fake_run_codex_exec)
+
+    code = worker_loop(
+        data_dir=data_dir,
+        worker_id="test-worker",
+        run_id=run_id,
+        lease_seconds=120,
+        max_attempts=3,
+        poll_seconds=0.01,
+        once=True,
+    )
+
+    assert code == 1
+    assert call_count == 1
+    status = run_status(conn, run_id=run_id)
+    assert status["error"] == 1
+    assert status["done"] == 0
+    tasks = list_tasks_for_run(conn, run_id=run_id)
+    assert tasks[0]["status"] == "error"
+    assert tasks[0]["execution_attempts"] == 1
+    assert "codex auth failed" in str(tasks[0]["error"])
+    assert "sign in with ChatGPT" in str(tasks[0]["error"])
+
+
 def test_worker_loop_applies_heads_up_tips_and_scores_outcome(
     monkeypatch,
     tmp_path: Path,

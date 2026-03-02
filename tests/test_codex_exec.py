@@ -9,6 +9,7 @@ import pytest
 from codex_farm.codex_exec import (
     CodexExecTimeoutError,
     extract_retry_after_seconds,
+    is_auth_failure_message,
     run_codex_exec,
 )
 
@@ -330,3 +331,16 @@ def test_extract_retry_after_seconds_parses_seconds_hint() -> None:
 
 def test_extract_retry_after_seconds_parses_minutes_hint() -> None:
     assert extract_retry_after_seconds("Too many requests. Try again in 2 minutes.") == 120
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("WebSocket error: HTTP 403 Forbidden wss://chatgpt.com/backend-api/codex/responses", True),
+        ("authentication failed: please sign in with ChatGPT", True),
+        ("HTTP 429 Too Many Requests", False),
+        ("schema validation failed at <root>", False),
+    ],
+)
+def test_is_auth_failure_message(message: str, expected: bool) -> None:
+    assert is_auth_failure_message(message) is expected

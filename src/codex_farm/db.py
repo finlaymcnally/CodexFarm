@@ -1255,6 +1255,70 @@ def list_tasks_for_run(
     return tasks
 
 
+def list_running_tasks_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    limit: int = 8,
+) -> list[dict]:
+    safe_limit = max(0, int(limit))
+    if safe_limit == 0:
+        return []
+
+    rows = conn.execute(
+        """
+        SELECT
+            task_id,
+            input_path,
+            rel_output_path,
+            attempts,
+            attempts AS lease_claims,
+            execution_attempts,
+            leased_by,
+            lease_until,
+            last_heartbeat_at,
+            updated_at
+        FROM tasks
+        WHERE run_id = ? AND status = 'running'
+        ORDER BY COALESCE(last_heartbeat_at, updated_at) DESC, input_path ASC
+        LIMIT ?
+        """,
+        (run_id, safe_limit),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_recent_error_tasks_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    limit: int = 5,
+) -> list[dict]:
+    safe_limit = max(0, int(limit))
+    if safe_limit == 0:
+        return []
+
+    rows = conn.execute(
+        """
+        SELECT
+            task_id,
+            input_path,
+            rel_output_path,
+            attempts,
+            attempts AS lease_claims,
+            execution_attempts,
+            error,
+            updated_at
+        FROM tasks
+        WHERE run_id = ? AND status = 'error'
+        ORDER BY updated_at DESC, input_path ASC
+        LIMIT ?
+        """,
+        (run_id, safe_limit),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def list_error_tasks(conn: sqlite3.Connection, run_id: str) -> list[dict]:
     rows = conn.execute(
         """

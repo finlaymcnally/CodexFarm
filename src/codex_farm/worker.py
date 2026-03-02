@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import replace
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -14,6 +15,7 @@ from .codex_exec import (
     CodexExecRateLimitError,
     CodexExecTimeoutError,
     extract_retry_after_seconds,
+    is_auth_failure_message,
     is_rate_limit_message,
     run_codex_exec,
 )
@@ -52,6 +54,14 @@ from .schema_utils import SchemaValidationError, validate_json_file_against_sche
 
 
 CODEX_REASONING_EFFORT_VALUES = {"none", "minimal", "low", "medium", "high", "xhigh"}
+_INVALID_JSON_SCHEMA_PATTERN = re.compile(r"invalid_json_schema", re.IGNORECASE)
+
+
+def _extract_invalid_json_schema_message(text: str) -> str | None:
+    for line in (text or "").splitlines():
+        if _INVALID_JSON_SCHEMA_PATTERN.search(line):
+            return line.strip()
+    return None
 
 
 class WorkerRuntimeFailure(RuntimeError):
@@ -918,11 +928,33 @@ def worker_loop(
                     if isinstance(part, str) and part.strip()
                 ).strip()
                 stderr = combined_tails or result.stderr_tail or "no stderr"
-                if is_rate_limit_message(stderr):
-                    retry_after_seconds = extract_retry_after_seconds(stderr)
-                    raise CodexExecRateLimitError(
-                        (
-                            "WARNING: codex rate limit (HTTP 429) detected; "
+            if is_auth_failure_message(stderr):
+                raise WorkerRuntimeFailure(
+                    (
+                        "codex auth failed: run `codex` once and sign in with ChatGPT, "
+                        "then retry this run. "
+                        f"codex exit={result.exit_code}; details: {stderr}"
+                    ),
+                    failure_category="auth_failure",
+                    stdout_tail=result.stdout_tail,
+                    stderr_tail=result.stderr_tail,
+                )
+            invalid_schema_message = _extract_invalid_json_schema_message(stderr)
+            if invalid_schema_message:
+                raise WorkerRuntimeFailure(
+                    (
+                        f"codex invalid_json_schema returned from codex API (exit={result.exit_code}): "
+                        f"{invalid_schema_message}"
+                    ),
+                    failure_category="invalid_json_schema",
+                    stdout_tail=result.stdout_tail,
+                    stderr_tail=result.stderr_tail,
+                )
+            if is_rate_limit_message(stderr):
+                retry_after_seconds = extract_retry_after_seconds(stderr)
+                raise CodexExecRateLimitError(
+                    (
+                        "WARNING: codex rate limit (HTTP 429) detected; "
                             "entering adaptive cooldown. "
                             f"codex exit={result.exit_code}; details: {stderr}"
                         ),
@@ -1113,7 +1145,11 @@ def worker_loop(
 
             error_full = str(exc)
             error_message = _trim_error(error_full)
-            terminal_failure = effective_execution_attempt_index >= max_attempts
+            terminal_failure = (
+                failure_category == "auth_failure"
+                or failure_category == "invalid_json_schema"
+                or effective_execution_attempt_index >= max_attempts
+            )
             capture_worker_forensics(
                 terminal=terminal_failure,
                 failure_stage=failure_stage,
@@ -1142,7 +1178,7 @@ def worker_loop(
                 },
             )
             staged_output_path.unlink(missing_ok=True)
-            if effective_execution_attempt_index >= max_attempts:
+            if terminal_failure:
                 transitioned = mark_task_error(
                     conn,
                     task_id=task["task_id"],

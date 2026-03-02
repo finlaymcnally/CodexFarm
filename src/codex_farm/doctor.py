@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import sys
 
+from .codex_exec import is_auth_failure_message
+
 
 @dataclass(frozen=True)
 class CheckResult:
@@ -27,6 +29,32 @@ def _run_command(cmd: list[str], timeout_seconds: int = 20) -> subprocess.Comple
 
 def _contains_exact_ok_line(text: str) -> bool:
     return any(line.strip() == "OK" for line in text.splitlines())
+
+
+def check_codex_login_status(timeout_seconds: int = 20) -> CheckResult:
+    codex_path = shutil.which("codex")
+    if codex_path is None:
+        return CheckResult(
+            name="codex login status",
+            ok=False,
+            detail="Skipped because codex is not installed",
+        )
+
+    login_proc = _run_command(["codex", "login", "status"], timeout_seconds=timeout_seconds)
+    raw_detail = login_proc.stdout.strip() or login_proc.stderr.strip() or "codex login status failed"
+    normalized = raw_detail.lower()
+    logged_in = "logged in" in normalized and "not logged in" not in normalized
+    ok = login_proc.returncode == 0 and logged_in
+    if ok:
+        detail = raw_detail
+    else:
+        detail = f"{raw_detail}; run `codex login` (or `codex`) and sign in with ChatGPT"
+
+    return CheckResult(
+        name="codex login status",
+        ok=ok,
+        detail=detail,
+    )
 
 
 def run_doctor_checks() -> tuple[list[CheckResult], bool]:
@@ -71,6 +99,17 @@ def run_doctor_checks() -> tuple[list[CheckResult], bool]:
             ),
         )
     )
+    login_check = check_codex_login_status(timeout_seconds=20)
+    checks.append(login_check)
+    if not login_check.ok:
+        checks.append(
+            CheckResult(
+                name="codex non-interactive check",
+                ok=False,
+                detail="Skipped because login status check failed",
+            )
+        )
+        return checks, False
 
     smoke_cmd = [
         "codex",
@@ -96,10 +135,14 @@ def run_doctor_checks() -> tuple[list[CheckResult], bool]:
             else "Received expected OK response (ignoring non-zero exit caused by local Codex warnings)"
         )
     else:
-        smoke_detail = (
-            (smoke_stderr.strip() or smoke_stdout.strip() or "codex exec failed")
-            + "; run `codex` once and sign in with ChatGPT"
-        )
+        failure_text = smoke_stderr.strip() or smoke_stdout.strip() or "codex exec failed"
+        if is_auth_failure_message(failure_text):
+            smoke_detail = (
+                f"{failure_text}; authentication appears invalid for this machine. "
+                "Run `codex` once and sign in with ChatGPT."
+            )
+        else:
+            smoke_detail = f"{failure_text}; run `codex` once and sign in with ChatGPT"
 
     checks.append(
         CheckResult(

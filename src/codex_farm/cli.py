@@ -3,18 +3,26 @@
 from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from datetime import datetime
+from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
+import re
 import threading
 import time
+from typing import Callable
 import uuid
 
 import typer
 
 from .analytics_dashboard import build_stats_dashboard
 from .autotune import AutotuneContext, build_autotune_payload
-from .codex_exec import CodexExecTimeoutError, is_rate_limit_message, run_codex_exec
+from .codex_exec import (
+    CodexExecTimeoutError,
+    is_auth_failure_message,
+    is_rate_limit_message,
+    run_codex_exec,
+)
 from .db import (
     PlannedTaskRow,
     cancel_run_tasks,
@@ -27,13 +35,15 @@ from .db import (
     insert_planned_tasks_for_run,
     list_heads_up_tips,
     list_error_tasks,
+    list_recent_error_tasks_snapshot,
+    list_running_tasks_snapshot,
     list_tasks_for_run,
     open_db,
     requeue_error_tasks_for_run,
     run_status,
     set_run_control_state,
 )
-from .doctor import run_doctor_checks
+from .doctor import check_codex_login_status, run_doctor_checks
 from .model_catalog import list_codex_models
 from .pack_lint import LintReport, lint_exit_code, lint_pack, lint_schema_file
 from .heads_up import (
@@ -68,6 +78,9 @@ from .worker import worker_loop
 TASK_STATUS_VALUES = ("queued", "running", "done", "error", "canceled")
 CODEX_REASONING_EFFORT_VALUES = ("none", "minimal", "low", "medium", "high", "xhigh")
 TELEMETRY_STATUS_VALUES = ("ok", "failed", "timeout", "other")
+PROGRESS_EVENT_PREFIX = "__codex_farm_progress__ "
+TERMINAL_RUN_STATUSES = {"done", "error", "canceled"}
+LOGIN_PRECHECK_SKIP_ENV = "CODEX_FARM_SKIP_LOGIN_PRECHECK"
 
 
 app = typer.Typer(help="Local worker farm for codex exec pipelines.", no_args_is_help=True)
@@ -84,6 +97,52 @@ app.add_typer(heads_up_app, name="heads-up")
 
 def _timestamp_now() -> str:
     return datetime.now().strftime("%Y-%m-%d_%H.%M.%S")
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()
+
+
+def _is_truthy(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _ensure_codex_login_precheck_or_die(
+    *,
+    command_name: str,
+    enabled: bool,
+) -> None:
+    if not enabled:
+        return
+    if _is_truthy(os.environ.get(LOGIN_PRECHECK_SKIP_ENV)):
+        return
+    login_check = check_codex_login_status(timeout_seconds=20)
+    if login_check.ok:
+        return
+    typer.echo(
+        f"codex login precheck failed before `{command_name}`: {login_check.detail}",
+        err=True,
+    )
+    typer.echo(
+        (
+            "Run `codex login` (or `codex`) and sign in before retrying. "
+            f"To bypass once, pass --no-login-precheck or set {LOGIN_PRECHECK_SKIP_ENV}=1."
+        ),
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
+_INVALID_JSON_SCHEMA_PATTERN = re.compile(r"invalid_json_schema", re.IGNORECASE)
+
+
+def _extract_invalid_json_schema_message(text: str) -> str | None:
+    for line in (text or "").splitlines():
+        if _INVALID_JSON_SCHEMA_PATTERN.search(line):
+            return line.strip()
+    return None
 
 
 def _resolve_farm_root_or_die(root: Path | None) -> Path:
@@ -323,6 +382,9 @@ def _run_workers(
     poll_seconds: float,
     farm_root: Path,
     json_output: bool,
+    progress_callback: Callable[[dict[str, object]], None] | None = None,
+    progress_max_running_tasks: int = 8,
+    progress_max_recent_errors: int = 5,
 ) -> tuple[int, dict, list[int]]:
     status_conn = open_db(db_path_for_data_dir(data_dir))
     init_db(status_conn)
@@ -361,11 +423,40 @@ def _run_workers(
                 f"done={status['done']} error={status['error']} canceled={status['canceled']}",
                 err=json_output,
             )
+            if progress_callback is not None:
+                try:
+                    progress_callback(
+                        _run_progress_payload(
+                            conn=status_conn,
+                            run_id=run_id,
+                            status=status,
+                            max_running_tasks=progress_max_running_tasks,
+                            max_recent_errors=progress_max_recent_errors,
+                        )
+                    )
+                except Exception as exc:
+                    typer.echo(
+                        f"warning: failed to emit progress snapshot: {exc}",
+                        err=True,
+                    )
             wait(pending, timeout=poll_seconds, return_when=FIRST_COMPLETED)
 
         exit_codes = [future.result() for future in futures]
 
     final_status = run_status(status_conn, run_id=run_id)
+    if progress_callback is not None:
+        try:
+            progress_callback(
+                _run_progress_payload(
+                    conn=status_conn,
+                    run_id=run_id,
+                    status=final_status,
+                    max_running_tasks=progress_max_running_tasks,
+                    max_recent_errors=progress_max_recent_errors,
+                )
+            )
+        except Exception as exc:
+            typer.echo(f"warning: failed to emit progress snapshot: {exc}", err=True)
     combined_exit = 1 if any(code != 0 for code in exit_codes) or final_status["error"] > 0 else 0
     return combined_exit, final_status, exit_codes
 
@@ -422,6 +513,118 @@ def _status_payload(status: dict) -> dict:
         "control_state": status["control_state"],
         "counts": _counts_payload(status),
     }
+
+
+def _run_progress_payload(
+    *,
+    conn,
+    run_id: str,
+    status: dict | None = None,
+    max_running_tasks: int = 8,
+    max_recent_errors: int = 5,
+) -> dict[str, object]:
+    resolved_status = status or run_status(conn, run_id=run_id)
+    counts = _counts_payload(resolved_status)
+    completed = int(counts["done"]) + int(counts["error"]) + int(counts["canceled"])
+    total = int(counts["total"])
+    remaining = max(0, total - completed)
+    percent_complete = round((completed / total) * 100.0, 2) if total > 0 else 0.0
+
+    running_tasks = list_running_tasks_snapshot(
+        conn,
+        run_id=run_id,
+        limit=max_running_tasks,
+    )
+    recent_errors = list_recent_error_tasks_snapshot(
+        conn,
+        run_id=run_id,
+        limit=max_recent_errors,
+    )
+
+    return {
+        **_status_payload(resolved_status),
+        "snapshot_at_utc": _utc_now_iso(),
+        "progress": {
+            "completed": completed,
+            "remaining": remaining,
+            "percent_complete": percent_complete,
+        },
+        "running_tasks": running_tasks,
+        "recent_errors": recent_errors,
+    }
+
+
+def _print_progress_snapshot(payload: dict[str, object]) -> None:
+    counts = payload.get("counts") if isinstance(payload, dict) else {}
+    count_map = counts if isinstance(counts, dict) else {}
+    progress = payload.get("progress") if isinstance(payload, dict) else {}
+    progress_map = progress if isinstance(progress, dict) else {}
+    typer.echo(
+        " ".join(
+            [
+                f"run={payload.get('run_id')}",
+                f"status={payload.get('status')}",
+                f"queued={count_map.get('queued', 0)}",
+                f"running={count_map.get('running', 0)}",
+                f"done={count_map.get('done', 0)}",
+                f"error={count_map.get('error', 0)}",
+                f"canceled={count_map.get('canceled', 0)}",
+                f"complete={progress_map.get('percent_complete', 0.0)}%",
+            ]
+        )
+    )
+
+    running_rows = payload.get("running_tasks")
+    if isinstance(running_rows, list) and running_rows:
+        for row in running_rows:
+            if not isinstance(row, dict):
+                continue
+            typer.echo(
+                "  running "
+                + " ".join(
+                    [
+                        f"task_id={row.get('task_id')}",
+                        f"worker={row.get('leased_by') or '-'}",
+                        f"input={row.get('input_path')}",
+                        f"attempts={row.get('lease_claims') or row.get('attempts') or 0}",
+                        f"exec_attempts={row.get('execution_attempts') or 0}",
+                    ]
+                )
+            )
+
+    error_rows = payload.get("recent_errors")
+    if isinstance(error_rows, list) and error_rows:
+        for row in error_rows:
+            if not isinstance(row, dict):
+                continue
+            error_text = str(row.get("error") or "").strip() or "(no message)"
+            typer.echo(
+                "  recent_error "
+                + " ".join(
+                    [
+                        f"task_id={row.get('task_id')}",
+                        f"input={row.get('input_path')}",
+                        f"error={error_text}",
+                    ]
+                )
+            )
+
+
+def _emit_progress_event(
+    *,
+    event: str,
+    payload: dict[str, object],
+) -> None:
+    event_payload = {
+        "event": str(event),
+        "schema_version": 1,
+        "emitted_at_utc": _utc_now_iso(),
+        **payload,
+    }
+    typer.echo(
+        f"{PROGRESS_EVENT_PREFIX}{json.dumps(event_payload, sort_keys=True)}",
+        err=True,
+    )
 
 
 def _lifecycle_action_payload(
@@ -1067,8 +1270,14 @@ def one_command(
         max=8,
         help="Maximum Heads Up tips appended to prompts.",
     ),
+    login_precheck: bool = typer.Option(
+        True,
+        "--login-precheck/--no-login-precheck",
+        help="Check `codex login status` before execution starts.",
+    ),
 ) -> None:
     """Process one file through one pipeline."""
+    _ensure_codex_login_precheck_or_die(command_name="one", enabled=login_precheck)
     farm_root = _resolve_farm_root_or_die(root)
     model_override = _resolve_model_override_or_die(model)
     effort_override = _resolve_reasoning_effort_override_or_die(reasoning_effort)
@@ -1237,12 +1446,29 @@ def one_command(
             tail_for_message = result.stdout_tail
         if not tail_for_message:
             tail_for_message = "no stderr"
-        error_message = f"codex exec failed (exit={result.exit_code}): {tail_for_message}"
+        invalid_schema_message = _extract_invalid_json_schema_message(tail_for_message)
+        auth_failure = is_auth_failure_message(tail_for_message)
+        if auth_failure:
+            error_message = (
+                f"codex auth failed (exit={result.exit_code}): {tail_for_message}. "
+                "Run `codex` once and sign in with ChatGPT, then retry."
+            )
+        elif invalid_schema_message:
+            error_message = (
+                f"codex invalid_json_schema returned from codex API (exit={result.exit_code}): "
+                f"{invalid_schema_message}"
+            )
+        else:
+            error_message = f"codex exec failed (exit={result.exit_code}): {tail_for_message}"
         failure_category = (
             "runtime_zero_no_payload"
             if result.exit_code == 0
             else "runtime_nonzero_no_payload"
         )
+        if auth_failure:
+            failure_category = "auth_failure"
+        elif invalid_schema_message:
+            failure_category = "invalid_json_schema"
         if is_rate_limit_message(tail_for_message):
             failure_category = "rate_limit"
         bundle_path = capture_one_forensics(
@@ -1253,6 +1479,17 @@ def one_command(
             stderr_tail=result.stderr_tail,
             output_path_forensics=resolved_output_path,
         )
+        if auth_failure:
+            typer.echo(
+                "warning: codex authentication failed; run `codex` once and sign in.",
+                err=True,
+            )
+        if invalid_schema_message:
+            typer.echo(
+                "warning: codex returned invalid_json_schema for pipeline output; "
+                "adjust schema fields and retry.",
+                err=True,
+            )
         if is_rate_limit_message(result.stderr_tail):
             typer.echo(
                 "warning: codex returned HTTP 429 rate limit; stopping without retry.",
@@ -1443,6 +1680,69 @@ def run_status_command(
         typer.echo(json.dumps(_status_payload(status), indent=2))
     else:
         _print_summary(status)
+
+
+@run_app.command("progress")
+def run_progress_command(
+    run_id: str = typer.Option(..., "--run-id"),
+    data_dir: Path = typer.Option(Path("./var"), "--data-dir"),
+    watch: bool = typer.Option(
+        False,
+        "--watch",
+        help="Poll and emit repeated snapshots until run reaches a terminal status.",
+    ),
+    poll_seconds: float = typer.Option(
+        1.0,
+        "--poll-seconds",
+        min=0.1,
+        help="Polling cadence used with --watch.",
+    ),
+    max_running_tasks: int = typer.Option(
+        8,
+        "--max-running-tasks",
+        min=0,
+        max=50,
+        help="Maximum running-task rows included in each snapshot.",
+    ),
+    max_recent_errors: int = typer.Option(
+        5,
+        "--max-recent-errors",
+        min=0,
+        max=50,
+        help="Maximum recent error rows included in each snapshot.",
+    ),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Return spinner-friendly run progress snapshots."""
+    conn = open_db(db_path_for_data_dir(resolve_data_dir(data_dir)))
+    init_db(conn)
+
+    while True:
+        payload = _run_progress_payload(
+            conn=conn,
+            run_id=run_id,
+            max_running_tasks=max_running_tasks,
+            max_recent_errors=max_recent_errors,
+        )
+        if json_output:
+            if watch:
+                typer.echo(json.dumps(payload, sort_keys=True))
+            else:
+                typer.echo(json.dumps(payload, indent=2))
+        else:
+            _print_progress_snapshot(payload)
+
+        if not watch:
+            return
+
+        run_status_value = str(payload.get("status") or "")
+        control_state_value = str(payload.get("control_state") or "")
+        if (
+            run_status_value in TERMINAL_RUN_STATUSES
+            or control_state_value == "canceled"
+        ):
+            return
+        time.sleep(poll_seconds)
 
 
 @run_app.command("tasks")
@@ -1869,8 +2169,14 @@ def worker_command(
     poll_seconds: float = typer.Option(1.0, "--poll-seconds"),
     once: bool = typer.Option(False, "--once"),
     root: Path | None = typer.Option(None, "--root", help="Pipeline-pack root."),
+    login_precheck: bool = typer.Option(
+        True,
+        "--login-precheck/--no-login-precheck",
+        help="Check `codex login status` before worker leasing starts.",
+    ),
 ) -> None:
     """Run a worker loop."""
+    _ensure_codex_login_precheck_or_die(command_name="worker", enabled=login_precheck)
     farm_root = _resolve_farm_root_or_die(root) if root is not None else None
     data_dir_resolved = resolve_data_dir(data_dir)
     _init_data_dir(data_dir_resolved)
@@ -1971,9 +2277,23 @@ def process_command(
         max=30,
         help="Maximum recommendations per category in process report payload.",
     ),
+    progress_events: bool = typer.Option(
+        False,
+        "--progress-events",
+        help=(
+            "Emit machine-readable progress events on stderr "
+            "(prefix: __codex_farm_progress__)."
+        ),
+    ),
+    login_precheck: bool = typer.Option(
+        True,
+        "--login-precheck/--no-login-precheck",
+        help="Check `codex login status` before creating and processing the run.",
+    ),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Create a run for a folder and process all tasks with N workers."""
+    _ensure_codex_login_precheck_or_die(command_name="process", enabled=login_precheck)
     farm_root = _resolve_farm_root_or_die(root)
     model_override = _resolve_model_override_or_die(model)
     effort_override = _resolve_reasoning_effort_override_or_die(reasoning_effort)
@@ -2029,6 +2349,31 @@ def process_command(
         incremental_source_run_id=incremental_from,
     )
 
+    def emit_progress_snapshot(progress_payload: dict[str, object]) -> None:
+        _emit_progress_event(
+            event="run_progress",
+            payload=progress_payload,
+        )
+
+    progress_snapshot_callback = emit_progress_snapshot if progress_events else None
+    if progress_events:
+        progress_conn = open_db(db_path_for_data_dir(data_dir_resolved))
+        init_db(progress_conn)
+        try:
+            start_snapshot = _run_progress_payload(
+                conn=progress_conn,
+                run_id=run_id,
+            )
+        finally:
+            progress_conn.close()
+        _emit_progress_event(
+            event="run_started",
+            payload={
+                **start_snapshot,
+                "workers": workers,
+            },
+        )
+
     if bool(incremental_summary.get("enabled")):
         typer.echo(
             f"Created run {run_id} with {task_count} tasks "
@@ -2047,6 +2392,7 @@ def process_command(
         poll_seconds=1.0,
         farm_root=farm_root,
         json_output=json_output,
+        progress_callback=progress_snapshot_callback,
     )
     heads_up_tips_added = 0
     heads_up_warning: str | None = None
@@ -2065,6 +2411,25 @@ def process_command(
         )
         if heads_up_warning is not None:
             typer.echo(f"warning: {heads_up_warning}", err=True)
+    if progress_events:
+        progress_conn = open_db(db_path_for_data_dir(data_dir_resolved))
+        init_db(progress_conn)
+        try:
+            final_snapshot = _run_progress_payload(
+                conn=progress_conn,
+                run_id=run_id,
+                status=status,
+            )
+        finally:
+            progress_conn.close()
+        _emit_progress_event(
+            event="run_finished",
+            payload={
+                **final_snapshot,
+                "exit_code": code,
+                "worker_exit_codes": worker_exit_codes,
+            },
+        )
 
     if json_output:
         payload = {
@@ -2080,6 +2445,7 @@ def process_command(
             "heads_up_max_tips": heads_up_max_tips,
             "heads_up_tips_applied": heads_up_tips_applied,
             "heads_up_tips_added": heads_up_tips_added,
+            "progress_events_enabled": progress_events,
             "incremental": incremental_summary,
             "worker_exit_codes": worker_exit_codes,
             "exit_code": code,
@@ -2159,8 +2525,14 @@ def go_command(
         "--incremental-from",
         help="Reuse from an explicit prior run ID (must be terminal and compatible).",
     ),
+    login_precheck: bool = typer.Option(
+        True,
+        "--login-precheck/--no-login-precheck",
+        help="Check `codex login status` before creating and processing the run.",
+    ),
 ) -> None:
     """Interactive inbox/outbox mode."""
+    _ensure_codex_login_precheck_or_die(command_name="go", enabled=login_precheck)
     farm_root = _resolve_farm_root_or_die(root)
     model_override = _resolve_model_override_or_die(model)
     effort_override = _resolve_reasoning_effort_override_or_die(reasoning_effort)

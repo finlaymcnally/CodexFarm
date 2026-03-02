@@ -47,6 +47,7 @@ This chunk is mostly a contract/orchestration layer. It delegates deeper behavio
 - `heads-up clear`
 - `heads-up learn`
 - `run create`
+- `run progress`
 - `run status`
 - `run tasks`
 - `run errors`
@@ -103,6 +104,7 @@ These helpers shape behavior across multiple commands:
 - `_run_workers(...)`
 - starts `workers` threads, each `worker_loop(... once=True)`.
 - polls run status and prints progress lines.
+- supports an optional progress snapshot callback so `process --progress-events` can emit machine-readable stderr events while preserving single-payload stdout JSON.
 - progress polling waits on pending worker futures with `timeout=poll_seconds`, so fast-completing runs do not always pay an extra full poll-sleep before finishing.
 - this `wait(..., return_when=FIRST_COMPLETED)` approach is intentional; prior fixed-sleep polling added avoidable latency in fast mocked/test runs.
 - worker warnings are forwarded to stderr, including adaptive 429 cooldown/recovery transitions.
@@ -120,6 +122,7 @@ Behavior:
 
 - Calls `run_doctor_checks()`.
 - Prints one line per check: `[OK]` or `[FAIL]` with check name and detail.
+- When non-interactive Codex smoke fails with auth/session signatures (`401/403`, login-required text), detail is auth-specific and recommends running `codex` to sign in.
 - If any check fails, prints a remediation hint and exits `1`.
 
 Exit codes:
@@ -313,12 +316,14 @@ Behavior:
 - Optional `--output-schema` overrides pipeline `output_schema_path` for Codex structured output and local validation.
 - Optional `--heads-up` enables prompt augmentation from learned tips in local SQLite.
 - Optional `--heads-up-max-tips` caps appended tips (default `3`, min `1`, max `8`).
+- Runs login precheck by default (`codex login status`) before execution; bypass with `--no-login-precheck` or `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
 - Resolves Codex `--cd` via `_resolve_one_cd_dir`.
 - Renders prompt from template (`{{INPUT_PATH}}` substitution).
 - When `--heads-up` is enabled, computes an input signature and appends matching `Heads up` tips before execution.
 - Runs Codex wrapper.
 - Validates output against schema.
 - Deletes output file if schema validation fails.
+- For auth/session failures, emits an auth-specific message and warning, then exits `1` (no retry path in `one`).
 - On failure, captures a best-effort forensics bundle under `<data_dir>/forensics/one/<forensics_id>/`.
 
 Exit codes:
@@ -415,6 +420,49 @@ Output:
     "error": 0,
     "total": 0
   }
+}
+```
+
+## `run progress`
+
+Purpose:
+
+- Return spinner-friendly progress snapshots for a run.
+
+Behavior:
+
+- Includes the same run status/count fields as `run status`.
+- Adds `progress.completed`, `progress.remaining`, and `progress.percent_complete`.
+- Adds bounded `running_tasks` and `recent_errors` arrays for active-state UI rendering.
+- `--watch` mode keeps polling until terminal run state and emits one snapshot per poll.
+
+Output:
+
+- text mode: compact run/count/percent summary plus running/error detail snippets.
+- JSON mode object:
+
+```json
+{
+  "run_id": "string",
+  "pipeline_id": "string",
+  "status": "queued|running|done|error|canceled",
+  "control_state": "active|paused|cancel_requested|canceled",
+  "counts": {
+    "queued": 0,
+    "running": 0,
+    "done": 0,
+    "error": 0,
+    "canceled": 0,
+    "total": 0
+  },
+  "snapshot_at_utc": "ISO-8601 timestamp",
+  "progress": {
+    "completed": 0,
+    "remaining": 0,
+    "percent_complete": 0.0
+  },
+  "running_tasks": [],
+  "recent_errors": []
 }
 ```
 
@@ -526,6 +574,7 @@ Purpose:
 Behavior:
 
 - Optional `--root` is validated only when passed.
+- Runs login precheck by default (`codex login status`) before leasing tasks; bypass with `--no-login-precheck` or `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
 - If `--worker-id` not provided, generates `worker-<8 hex chars>`.
 - Calls `worker_loop(...)` and exits with that exact code.
 
@@ -543,6 +592,7 @@ Behavior:
 
 - Resolves root, workspace override, optional model override, optional effort override, and pipeline.
 - Resolves optional output-schema override (`--output-schema`).
+- Runs login precheck by default (`codex login status`) before run creation; bypass with `--no-login-precheck` or `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
 - Optional `--incremental` enables planning-time reuse from the latest compatible prior run.
 - Optional `--incremental-from <run_id>` forces one source run and fails on incompatibility.
 - Glob selection rule:
@@ -558,6 +608,10 @@ Behavior:
 - Distiller failures are warning-only and do not change run/task status semantics.
 - `--telemetry-report/--no-telemetry-report` controls whether `process --json` includes an embedded telemetry report (enabled by default).
 - `--telemetry-limit` and `--telemetry-recommendations-limit` bound report size in `process --json`.
+- `--progress-events` emits machine-readable stderr events prefixed with `__codex_farm_progress__ `:
+  - `run_started` (initial snapshot + worker count)
+  - `run_progress` (periodic snapshots from worker polling loop)
+  - `run_finished` (terminal snapshot + exit metadata)
 
 Output contract:
 
@@ -566,6 +620,7 @@ Output contract:
 - JSON mode:
 - stdout is a single final JSON object.
 - creation/progress lines go to stderr.
+- with `--progress-events`, stderr additionally includes prefixed JSON event lines for caller-side spinner/progress adapters.
 
 `process --json` payload:
 
@@ -592,6 +647,7 @@ Output contract:
   "heads_up_max_tips": 3,
   "heads_up_tips_applied": 0,
   "heads_up_tips_added": 0,
+  "progress_events_enabled": false,
   "incremental": {
     "enabled": true,
     "source_run_id": "string or null",
@@ -657,6 +713,7 @@ Flow:
 - Optional `--output-schema` persists run-level `output_schema_path_override` for worker execution.
 - Optional `--heads-up`/`--heads-up-max-tips` persist run-level prompt-adaptation settings for worker execution.
 - Optional `--incremental` and `--incremental-from` persist incremental planning intent for run reproducibility.
+- Runs login precheck by default (`codex login status`) before run creation; bypass with `--no-login-precheck` or `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
 - Creates run and executes workers similarly to `process`.
 - When `--heads-up` is enabled and run reaches terminal status, performs one best-effort post-run learning call and prints `Heads Up tips added: <n>`.
 
@@ -671,6 +728,7 @@ Exit codes:
 - `lint --json` is machine-facing; keep stdout JSON-only.
 - `run create` default glob is always `"**/*.json"`, while `process` defaults to pipeline `input_glob_default` when `--glob` is omitted.
 - `process` now uses adaptive run-level 429 handling (cooldown + reduced concurrency + recovery) instead of hard-stop-on-first-hit behavior.
+- Login precheck defaults to enabled on `one`, `worker`, `process`, and `go`; `--no-login-precheck` and env `CODEX_FARM_SKIP_LOGIN_PRECHECK=1` are explicit bypass controls.
 - Persisted run config must include absolute `farm_root`; include `workspace_root` only when explicitly provided.
 - Persisted run config includes `codex_model` only when the user passes `--model`; workers honor this override instead of pipeline default.
 - Persisted run config includes `codex_reasoning_effort` only when the user passes effort aliases; workers honor this override instead of pipeline default.

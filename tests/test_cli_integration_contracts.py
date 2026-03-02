@@ -6,6 +6,7 @@ from typer.testing import CliRunner
 
 from codex_farm.cli import app
 from codex_farm.codex_exec import CodexExecResult
+from codex_farm.doctor import CheckResult
 from codex_farm.db import (
     create_run,
     enqueue_tasks_for_run,
@@ -409,6 +410,323 @@ def test_process_json_stdout_contract_and_workspace_root(monkeypatch, tmp_path: 
         str(schema_override_path.resolve()),
     ]
     assert all(path != str(schema_override_path.resolve()) for path in captured_schema_paths)
+
+
+def test_process_login_precheck_fails_fast_before_run_creation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("CODEX_FARM_SKIP_LOGIN_PRECHECK", raising=False)
+
+    def fake_login_check(timeout_seconds: int = 20):
+        return CheckResult(
+            name="codex login status",
+            ok=False,
+            detail="Not logged in using ChatGPT",
+        )
+
+    monkeypatch.setattr("codex_farm.cli.check_codex_login_status", fake_login_check)
+
+    pack = tmp_path / "pack"
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    data_dir = tmp_path / "var"
+    pipeline_id = "demo.contract.precheck.v1"
+    _write_pipeline_pack(pack, pipeline_id)
+    input_dir.mkdir(parents=True)
+    (input_dir / "a.json").write_text("{}", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "process",
+            "--root",
+            str(pack),
+            "--pipeline",
+            pipeline_id,
+            "--in",
+            str(input_dir),
+            "--out",
+            str(output_dir),
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "codex login precheck failed before `process`" in result.stderr
+    db_path = data_dir / "codex_farm.sqlite3"
+    assert not db_path.exists()
+
+
+def test_process_no_login_precheck_bypasses_login_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("CODEX_FARM_SKIP_LOGIN_PRECHECK", raising=False)
+
+    def fake_login_check(timeout_seconds: int = 20):
+        return CheckResult(
+            name="codex login status",
+            ok=False,
+            detail="Not logged in using ChatGPT",
+        )
+
+    monkeypatch.setattr("codex_farm.cli.check_codex_login_status", fake_login_check)
+
+    pack = tmp_path / "pack"
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    data_dir = tmp_path / "var"
+    pipeline_id = "demo.contract.no.precheck.v1"
+    _write_pipeline_pack(pack, pipeline_id)
+    input_dir.mkdir(parents=True)
+    (input_dir / "a.json").write_text("{}", encoding="utf-8")
+
+    def fake_run_codex_exec(**kwargs):
+        output_path = kwargs["output_path"]
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        prompt_line = kwargs["prompt"].strip().splitlines()[-1]
+        input_path = prompt_line.replace("Input file path: ", "")
+        output_path.write_text(
+            json.dumps({"ok": "OK", "source_path": input_path}),
+            encoding="utf-8",
+        )
+        return CodexExecResult(ok=True, exit_code=0, stderr_tail="")
+
+    monkeypatch.setattr("codex_farm.worker.run_codex_exec", fake_run_codex_exec)
+
+    result = runner.invoke(
+        app,
+        [
+            "process",
+            "--root",
+            str(pack),
+            "--pipeline",
+            pipeline_id,
+            "--in",
+            str(input_dir),
+            "--out",
+            str(output_dir),
+            "--data-dir",
+            str(data_dir),
+            "--no-login-precheck",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "done"
+    assert payload["counts"]["done"] == 1
+
+
+def test_run_progress_json_contract(tmp_path: Path) -> None:
+    data_dir = tmp_path / "var"
+    db_path = data_dir / "codex_farm.sqlite3"
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir(parents=True)
+    output_dir.mkdir(parents=True)
+    first_input = input_dir / "a.json"
+    second_input = input_dir / "b.json"
+    first_input.write_text("{}", encoding="utf-8")
+    second_input.write_text("{}", encoding="utf-8")
+
+    conn = open_db(db_path)
+    init_db(conn)
+    run_id = create_run(
+        conn,
+        pipeline_id="demo.progress.v1",
+        input_dir=str(input_dir),
+        glob="**/*.json",
+        output_dir=str(output_dir),
+        config={},
+    )
+    enqueue_tasks_for_run(
+        conn,
+        run_id=run_id,
+        input_files=[first_input, second_input],
+        input_root=input_dir,
+        output_root=output_dir,
+        output_ext=".json",
+    )
+    running_task = lease_one_task(conn, worker_id="w1", lease_seconds=30, run_id=run_id)
+    assert running_task is not None
+    errored_task = lease_one_task(conn, worker_id="w2", lease_seconds=30, run_id=run_id)
+    assert errored_task is not None
+    mark_task_error(
+        conn,
+        task_id=errored_task["task_id"],
+        error="simulated terminal failure",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "progress",
+            "--run-id",
+            run_id,
+            "--data-dir",
+            str(data_dir),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["run_id"] == run_id
+    assert payload["pipeline_id"] == "demo.progress.v1"
+    assert payload["status"] == "running"
+    assert payload["counts"]["total"] == 2
+    assert payload["counts"]["running"] == 1
+    assert payload["counts"]["error"] == 1
+    assert payload["progress"]["completed"] == 1
+    assert payload["progress"]["remaining"] == 1
+    assert payload["progress"]["percent_complete"] == 50.0
+    assert len(payload["running_tasks"]) == 1
+    assert payload["running_tasks"][0]["task_id"] == running_task["task_id"]
+    assert len(payload["recent_errors"]) == 1
+    assert payload["recent_errors"][0]["task_id"] == errored_task["task_id"]
+    assert isinstance(payload["snapshot_at_utc"], str) and payload["snapshot_at_utc"]
+
+
+def test_run_progress_watch_json_stops_on_terminal_run(tmp_path: Path) -> None:
+    data_dir = tmp_path / "var"
+    db_path = data_dir / "codex_farm.sqlite3"
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir(parents=True)
+    output_dir.mkdir(parents=True)
+    source = input_dir / "a.json"
+    source.write_text("{}", encoding="utf-8")
+
+    conn = open_db(db_path)
+    init_db(conn)
+    run_id = create_run(
+        conn,
+        pipeline_id="demo.progress.watch.v1",
+        input_dir=str(input_dir),
+        glob="**/*.json",
+        output_dir=str(output_dir),
+        config={},
+    )
+    enqueue_tasks_for_run(
+        conn,
+        run_id=run_id,
+        input_files=[source],
+        input_root=input_dir,
+        output_root=output_dir,
+        output_ext=".json",
+    )
+    leased = lease_one_task(conn, worker_id="w1", lease_seconds=30, run_id=run_id)
+    assert leased is not None
+    output_path = output_dir / "a.json"
+    output_path.write_text("{}", encoding="utf-8")
+    mark_task_done(
+        conn,
+        task_id=leased["task_id"],
+        output_path=str(output_path),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "progress",
+            "--run-id",
+            run_id,
+            "--data-dir",
+            str(data_dir),
+            "--watch",
+            "--poll-seconds",
+            "0.1",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert payload["run_id"] == run_id
+    assert payload["status"] == "done"
+    assert payload["counts"]["done"] == 1
+
+
+def test_process_progress_events_emit_machine_readable_stderr(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    pack = tmp_path / "pack"
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    data_dir = tmp_path / "var"
+    pipeline_id = "demo.progress.events.v1"
+    _write_pipeline_pack(pack, pipeline_id)
+    input_dir.mkdir(parents=True)
+    (input_dir / "a.json").write_text("{}", encoding="utf-8")
+
+    def fake_run_codex_exec(**kwargs):
+        output_path = kwargs["output_path"]
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        prompt_line = kwargs["prompt"].strip().splitlines()[-1]
+        input_path = prompt_line.replace("Input file path: ", "")
+        output_path.write_text(
+            json.dumps(
+                {
+                    "ok": "OK",
+                    "source_path": input_path,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return CodexExecResult(ok=True, exit_code=0, stderr_tail="")
+
+    monkeypatch.setattr("codex_farm.worker.run_codex_exec", fake_run_codex_exec)
+
+    result = runner.invoke(
+        app,
+        [
+            "process",
+            "--root",
+            str(pack),
+            "--pipeline",
+            pipeline_id,
+            "--in",
+            str(input_dir),
+            "--out",
+            str(output_dir),
+            "--workers",
+            "1",
+            "--data-dir",
+            str(data_dir),
+            "--progress-events",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "done"
+    assert payload["progress_events_enabled"] is True
+
+    event_prefix = "__codex_farm_progress__ "
+    event_lines = [
+        line
+        for line in result.stderr.splitlines()
+        if line.startswith(event_prefix)
+    ]
+    assert event_lines
+    events = [json.loads(line[len(event_prefix) :]) for line in event_lines]
+    assert events[0]["event"] == "run_started"
+    assert any(event["event"] == "run_progress" for event in events)
+    assert events[-1]["event"] == "run_finished"
+    assert events[0]["run_id"] == payload["run_id"]
+    assert events[-1]["run_id"] == payload["run_id"]
+    assert events[-1]["exit_code"] == 0
+    assert events[-1]["counts"]["done"] == 1
 
 
 def test_run_telemetry_json_contract(tmp_path: Path) -> None:
@@ -1423,6 +1741,63 @@ def test_one_reports_forensics_bundle_on_failure(monkeypatch, tmp_path: Path) ->
     assert bundle_path is not None
     assert bundle_path.exists()
     assert (bundle_path / "metadata.json").exists()
+
+
+def test_one_auth_failure_reports_login_guidance_and_forensics_category(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    pack = tmp_path / "pack"
+    input_path = tmp_path / "input.json"
+    output_path = tmp_path / "out.json"
+    pipeline_id = "demo.contract.v1"
+    _write_pipeline_pack(pack, pipeline_id)
+    input_path.write_text("{}", encoding="utf-8")
+
+    def fake_run_codex_exec(**kwargs):
+        return CodexExecResult(
+            ok=False,
+            exit_code=1,
+            stderr_tail=(
+                "WARNING: no last agent message. "
+                "WebSocket error: HTTP 403 Forbidden "
+                "wss://chatgpt.com/backend-api/codex/responses"
+            ),
+            stdout_tail="",
+        )
+
+    monkeypatch.setattr("codex_farm.cli.run_codex_exec", fake_run_codex_exec)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "one",
+            "--root",
+            str(pack),
+            "--pipeline",
+            pipeline_id,
+            "--in",
+            str(input_path),
+            "--out",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "codex auth failed (exit=1):" in result.stdout
+    assert "Run `codex` once and sign in with ChatGPT, then retry." in result.stdout
+    assert "warning: codex authentication failed; run `codex` once and sign in." in result.stderr
+    assert "Forensics bundle:" in result.stderr
+
+    bundle_path: Path | None = None
+    for line in result.stderr.splitlines():
+        if line.startswith("Forensics bundle: "):
+            bundle_path = Path(line.split("Forensics bundle: ", 1)[1].strip())
+            break
+    assert bundle_path is not None
+    metadata = json.loads((bundle_path / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["failure_category"] == "auth_failure"
 
 
 def test_run_lifecycle_commands_json_contract(tmp_path: Path) -> None:

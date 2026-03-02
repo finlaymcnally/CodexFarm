@@ -7,6 +7,26 @@ read_when:
 
 # 01 CLI And Command Contracts Log
 
+## 2026-03-02_00.52.58 - Execution login precheck gate
+
+- Source: repeated external caller failures when Codex session was not logged in.
+- Added default login precheck (`codex login status`) for execution entrypoints: `one`, `worker`, `process`, and `go`.
+- Locked caller override contract: `--no-login-precheck` and env `CODEX_FARM_SKIP_LOGIN_PRECHECK=1` explicitly bypass the gate when needed.
+- Process/go policy impact: run creation now aborts early on missing login instead of enqueueing work that would fail at runtime.
+
+## 2026-03-02_00.45.23 - Auth-specific CLI messaging for doctor and one
+
+- Source: runtime incident where Codex websocket auth returned `403 Forbidden` and failures were too generic.
+- `doctor` now emits auth-specific failure detail when smoke-check output matches login/session failure signatures.
+- `one` now reports auth-specific failure text/warning and tags forensics as `failure_category="auth_failure"` when Codex auth fails.
+
+## 2026-03-01_20.40.00 - Spinner-friendly progress command + process event stream
+
+- Source: progress-API integration work for external callers.
+- Added `run progress` as a machine-facing snapshot command with optional watch mode for polling UIs.
+- Extended `process` with opt-in `--progress-events`, emitting prefixed stderr JSON events (`run_started`, `run_progress`, `run_finished`) while keeping stdout JSON single-payload safe.
+- Locked additive contract shape: existing `process --json` payload remains compatible, with one additive boolean field (`progress_events_enabled`).
+
 ## 2026-02-28_15.20.27 - Telemetry report schema v2 insights + tuning playbook
 
 - Source: merged historical notes.

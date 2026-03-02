@@ -6,6 +6,18 @@ read_when:
 
 # 05 Codex Exec And Schema Gate Log
 
+## 2026-03-02_00.52.58 - Doctor login-status check before smoke
+
+- Source: prevention work after repeated unauthenticated external runs.
+- Added `codex login status` check as an explicit doctor step before non-interactive smoke execution.
+- Locked sequencing: when login-status fails, non-interactive smoke is skipped so the primary auth/setup failure is surfaced directly.
+
+## 2026-03-02_00.45.23 - Auth/session failure classification helper
+
+- Source: RecipeImport incident where Codex workers hit websocket `403 Forbidden` due missing login/session.
+- Added `is_auth_failure_message(...)` in `codex_exec.py` for shared classification of login/session failures (`401/403`, backend websocket auth denial, login-required text).
+- Locked reuse contract: caller layers (`worker`, `one`, `doctor`) consume this helper for policy/messaging instead of duplicating string matching.
+
 ## 2026-02-28_18.46.00 - Failed-attempt forensics bundles made first-class
 
 - Source: merged task doc `docs/tasks/idea1-6.md`.

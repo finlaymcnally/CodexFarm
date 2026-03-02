@@ -50,6 +50,7 @@ with open(output_path, "w", encoding="utf-8") as handle:
 def _env_with_fake_codex(bin_dir: Path) -> dict[str, str]:
     return {
         "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+        "CODEX_FARM_SKIP_LOGIN_PRECHECK": "1",
     }
 
 
