@@ -47,6 +47,7 @@ One row is appended per `run_codex_exec(...)` call.
 
 - For live runs, this is the runtime schema path.
 - For frozen snapshot runs, worker may execute against a frozen copy, but telemetry keeps logical schema source identity when available so cross-run grouping stays stable.
+- When appending telemetry, codex-farm auto-migrates legacy `codex_exec_activity.csv` headers in place to the current schema and writes a timestamped `*.legacy-YYYY-MM-DD_HH.MM.SS.csv` backup before rewrite.
 
 ## Dashboard command
 

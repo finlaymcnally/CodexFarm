@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -178,6 +179,71 @@ _USAGE_LOG_FIELDS = (
     "retry_previous_error_sha256",
     "failure_category",
     "rate_limit_suspected",
+)
+_LEGACY_USAGE_LOG_FIELDS = (
+    "logged_at_utc",
+    "started_at_utc",
+    "finished_at_utc",
+    "duration_ms",
+    "status",
+    "exit_code",
+    "accepted_nonzero_exit",
+    "timeout_seconds",
+    "model",
+    "sandbox",
+    "ask_for_approval",
+    "web_search",
+    "cd_dir",
+    "output_schema_path",
+    "output_path",
+    "output_payload_present",
+    "output_bytes",
+    "tokens_input",
+    "tokens_cached_input",
+    "tokens_output",
+    "tokens_total",
+    "usage_json",
+    "thread_id",
+    "prompt_chars",
+    "prompt_sha256",
+    "prompt_text",
+    "stderr_tail",
+    "stdout_tail",
+    "source",
+    "pipeline_id",
+    "run_id",
+    "task_id",
+    "worker_id",
+    "input_path",
+)
+_LEGACY_USAGE_LOG_FIELDS_WITH_REASONING = (
+    _LEGACY_USAGE_LOG_FIELDS[:12]
+    + ("reasoning_effort",)
+    + _LEGACY_USAGE_LOG_FIELDS[12:]
+)
+_LEGACY_USAGE_LOG_FIELDS_WITH_HEADS_UP = (
+    _LEGACY_USAGE_LOG_FIELDS_WITH_REASONING
+    + (
+        "heads_up_applied",
+        "heads_up_tip_count",
+        "heads_up_input_signature",
+    )
+)
+_USAGE_LOG_FIELDS_WITHOUT_THREAD_ID = tuple(
+    field for field in _USAGE_LOG_FIELDS if field != "thread_id"
+)
+_USAGE_LOG_FIELDS_WITHOUT_THREAD_ID_OR_FAILURE = tuple(
+    field
+    for field in _USAGE_LOG_FIELDS_WITHOUT_THREAD_ID
+    if field not in ("failure_category", "rate_limit_suspected")
+)
+_KNOWN_USAGE_LOG_ROW_SCHEMAS = (
+    _USAGE_LOG_FIELDS,
+    _USAGE_LOG_FIELDS_WITHOUT_THREAD_ID,
+    _USAGE_LOG_FIELDS_WITHOUT_THREAD_ID_OR_FAILURE,
+    _LEGACY_USAGE_LOG_FIELDS_WITH_HEADS_UP,
+    _LEGACY_USAGE_LOG_FIELDS_WITH_REASONING,
+    _LEGACY_USAGE_LOG_FIELDS,
 )
 _USAGE_LOG_LOCK = threading.Lock()
 _OUTPUT_PREVIEW_BYTES = 2400
@@ -358,6 +424,104 @@ def _failure_category(
     return "failed"
 
 
+def _recover_reasoning_tokens(usage_json: str) -> int | None:
+    if not usage_json:
+        return None
+    try:
+        parsed = json.loads(usage_json)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return _extract_reasoning_tokens(parsed)
+
+
+def _row_schema_for_migration(
+    *,
+    existing_header: list[str],
+    row: list[str],
+) -> tuple[str, ...]:
+    row_len = len(row)
+    for schema in _KNOWN_USAGE_LOG_ROW_SCHEMAS:
+        if len(schema) == row_len:
+            return schema
+
+    cleaned_header = tuple(
+        cell.strip()
+        for cell in existing_header
+        if isinstance(cell, str) and cell.strip()
+    )
+    if cleaned_header and row_len <= len(cleaned_header):
+        return cleaned_header[:row_len]
+    if row_len <= len(existing_header):
+        return tuple(existing_header[:row_len])
+
+    # Last-resort fallback for unknown expanded schemas.
+    return _USAGE_LOG_FIELDS[:row_len]
+
+
+def _migrate_usage_row(
+    *,
+    existing_header: list[str],
+    row: list[str],
+) -> dict[str, str]:
+    mapped: dict[str, str] = {}
+    row_schema = _row_schema_for_migration(existing_header=existing_header, row=row)
+    for index, value in enumerate(row):
+        if index >= len(row_schema):
+            break
+        field_name = row_schema[index].strip()
+        if field_name:
+            mapped[field_name] = value
+
+    normalized = {field: mapped.get(field, "") for field in _USAGE_LOG_FIELDS}
+    if not normalized["tokens_reasoning"]:
+        recovered = _recover_reasoning_tokens(normalized.get("usage_json", ""))
+        if recovered is not None:
+            normalized["tokens_reasoning"] = str(recovered)
+    if not normalized["tokens_total"]:
+        input_tokens = _as_int(normalized["tokens_input"])
+        output_tokens = _as_int(normalized["tokens_output"])
+        if input_tokens is not None and output_tokens is not None:
+            normalized["tokens_total"] = str(input_tokens + output_tokens)
+    return normalized
+
+
+def _legacy_usage_backup_path(path: Path) -> Path:
+    stamp = datetime.now().strftime("%Y-%m-%d_%H.%M.%S")
+    return path.with_name(f"{path.stem}.legacy-{stamp}{path.suffix}")
+
+
+def _migrate_usage_log_schema_if_needed(handle, *, path: Path) -> None:
+    handle.seek(0)
+    reader = csv.reader(handle)
+    try:
+        existing_header = next(reader)
+    except StopIteration:
+        return
+    if tuple(existing_header) == _USAGE_LOG_FIELDS:
+        return
+
+    migrated_rows = [
+        _migrate_usage_row(existing_header=existing_header, row=row)
+        for row in reader
+        if row
+    ]
+
+    try:
+        shutil.copy2(path, _legacy_usage_backup_path(path))
+    except OSError:
+        # A failed backup should not block telemetry writes.
+        pass
+
+    handle.seek(0)
+    handle.truncate(0)
+    writer = csv.DictWriter(handle, fieldnames=_USAGE_LOG_FIELDS)
+    writer.writeheader()
+    for migrated in migrated_rows:
+        writer.writerow(migrated)
+
+
 def _append_usage_row(path: Path, row: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with _USAGE_LOG_LOCK:
@@ -365,6 +529,7 @@ def _append_usage_row(path: Path, row: dict[str, object]) -> None:
             if fcntl is not None:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             try:
+                _migrate_usage_log_schema_if_needed(handle, path=path)
                 handle.seek(0, os.SEEK_END)
                 write_header = handle.tell() == 0
                 writer = csv.DictWriter(handle, fieldnames=_USAGE_LOG_FIELDS)

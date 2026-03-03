@@ -8,6 +8,7 @@ read_when:
 # Telemetry Contracts
 
 `codex_exec_activity.csv` is append-only and emits one row per `run_codex_exec(...)` call.
+If the file uses a legacy header, codex-farm auto-migrates it to the current schema on next append and drops a timestamped `*.legacy-YYYY-MM-DD_HH.MM.SS.csv` backup beside the CSV.
 
 Preferred caller API (instead of parsing CSV directly):
 

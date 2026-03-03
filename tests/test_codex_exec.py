@@ -8,6 +8,7 @@ import pytest
 
 from codex_farm.codex_exec import (
     CodexExecTimeoutError,
+    _USAGE_LOG_FIELDS,
     extract_retry_after_seconds,
     is_auth_failure_message,
     run_codex_exec,
@@ -17,6 +18,174 @@ from codex_farm.codex_exec import (
 def _read_rows(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
+
+
+_LEGACY_USAGE_LOG_FIELDS = (
+    "logged_at_utc",
+    "started_at_utc",
+    "finished_at_utc",
+    "duration_ms",
+    "status",
+    "exit_code",
+    "accepted_nonzero_exit",
+    "timeout_seconds",
+    "model",
+    "sandbox",
+    "ask_for_approval",
+    "web_search",
+    "cd_dir",
+    "output_schema_path",
+    "output_path",
+    "output_payload_present",
+    "output_bytes",
+    "tokens_input",
+    "tokens_cached_input",
+    "tokens_output",
+    "tokens_total",
+    "usage_json",
+    "thread_id",
+    "prompt_chars",
+    "prompt_sha256",
+    "prompt_text",
+    "stderr_tail",
+    "stdout_tail",
+    "source",
+    "pipeline_id",
+    "run_id",
+    "task_id",
+    "worker_id",
+    "input_path",
+)
+
+
+def test_run_codex_exec_migrates_legacy_usage_log_schema(monkeypatch, tmp_path: Path) -> None:
+    output_path = tmp_path / "out.json"
+    schema_path = tmp_path / "schema.json"
+    log_path = tmp_path / "codex_exec_activity.csv"
+    schema_path.write_text("{}", encoding="utf-8")
+
+    legacy_row = {field: "" for field in _LEGACY_USAGE_LOG_FIELDS}
+    legacy_row.update(
+        {
+            "status": "ok",
+            "tokens_input": "10",
+            "tokens_output": "5",
+            "tokens_total": "",
+            "usage_json": json.dumps({"output_tokens_details": {"reasoning_tokens": 11}}),
+            "prompt_text": "legacy row",
+            "output_payload_present": "true",
+            "output_bytes": "123",
+        }
+    )
+
+    stale_header_row = {field: "" for field in _USAGE_LOG_FIELDS}
+    stale_header_row.update(
+        {
+            "status": "ok",
+            "model": "gpt-5.3-codex",
+            "reasoning_effort": "high",
+            "tokens_input": "20",
+            "tokens_output": "9",
+            "tokens_reasoning": "7",
+            "tokens_total": "29",
+            "usage_json": json.dumps({"output_tokens_details": {"reasoning_tokens": 7}}),
+            "output_payload_present": "true",
+            "output_bytes": "456",
+            "prompt_text": "stale header row",
+        }
+    )
+    legacy_with_reasoning_fields = (
+        _LEGACY_USAGE_LOG_FIELDS[:12]
+        + ("reasoning_effort",)
+        + _LEGACY_USAGE_LOG_FIELDS[12:]
+    )
+    legacy_with_reasoning_row = {field: "" for field in legacy_with_reasoning_fields}
+    legacy_with_reasoning_row.update(
+        {
+            "status": "ok",
+            "reasoning_effort": "low",
+            "cd_dir": "/tmp/v2",
+            "tokens_input": "8",
+            "tokens_output": "2",
+            "tokens_total": "10",
+            "prompt_sha256": "sha-v2",
+            "prompt_text": "legacy with reasoning",
+            "input_path": "/tmp/v2/input.json",
+        }
+    )
+    no_thread_fields = tuple(field for field in _USAGE_LOG_FIELDS if field != "thread_id")
+    no_thread_row = {field: "" for field in no_thread_fields}
+    no_thread_row.update(
+        {
+            "status": "ok",
+            "model": "gpt-5.3-codex-spark",
+            "reasoning_effort": "medium",
+            "tokens_input": "40",
+            "tokens_output": "10",
+            "tokens_reasoning": "13",
+            "tokens_total": "50",
+            "prompt_sha256": "sha-no-thread",
+            "prompt_text": "no-thread row",
+            "input_path": "/tmp/no-thread/input.json",
+            "codex_event_count": "2",
+            "codex_event_types_json": json.dumps(["thread.started", "turn.completed"]),
+        }
+    )
+
+    with log_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(_LEGACY_USAGE_LOG_FIELDS)
+        writer.writerow([legacy_row[field] for field in _LEGACY_USAGE_LOG_FIELDS])
+        writer.writerow([legacy_with_reasoning_row[field] for field in legacy_with_reasoning_fields])
+        writer.writerow([no_thread_row[field] for field in no_thread_fields])
+        writer.writerow([stale_header_row[field] for field in _USAGE_LOG_FIELDS])
+
+    def fake_run(cmd, **kwargs):
+        temp_output = Path(cmd[cmd.index("--output-last-message") + 1])
+        temp_output.write_text('{"ok":"OK"}', encoding="utf-8")
+        stdout = (
+            '{"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens":10,'
+            '"output_tokens":30,"output_tokens_details":{"reasoning_tokens":19}}}'
+        )
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    run_codex_exec(
+        cd_dir=tmp_path,
+        prompt="Return JSON.",
+        model="gpt-5.3-codex-spark",
+        sandbox="read-only",
+        ask_for_approval="never",
+        web_search="disabled",
+        output_schema=schema_path,
+        output_path=output_path,
+        timeout_seconds=30,
+        usage_log_csv=log_path,
+    )
+
+    with log_path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        assert reader.fieldnames is not None
+        assert "tokens_reasoning" in reader.fieldnames
+        assert "reasoning_effort" in reader.fieldnames
+        rows = list(reader)
+
+    assert len(rows) == 5
+    assert rows[0]["tokens_reasoning"] == "11"
+    assert rows[0]["tokens_total"] == "15"
+    assert rows[1]["reasoning_effort"] == "low"
+    assert rows[1]["prompt_sha256"] == "sha-v2"
+    assert rows[1]["tokens_reasoning"] == ""
+    assert rows[2]["reasoning_effort"] == "medium"
+    assert rows[2]["prompt_sha256"] == "sha-no-thread"
+    assert rows[2]["tokens_reasoning"] == "13"
+    assert rows[3]["reasoning_effort"] == "high"
+    assert rows[3]["tokens_reasoning"] == "7"
+    assert rows[4]["tokens_reasoning"] == "19"
+
+    backups = list(log_path.parent.glob("codex_exec_activity.legacy-*.csv"))
+    assert backups
 
 
 def test_run_codex_exec_logs_usage_from_jsonl_stdout(monkeypatch, tmp_path: Path) -> None:
