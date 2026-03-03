@@ -7,6 +7,12 @@ read_when:
 
 # 08 External Program Reference Log
 
+## 2026-03-02_21.10.10 - External reasoning-token telemetry contract
+
+- Source: caller integrations can now observe reasoning token usage in Codex status output and need the same signal in machine-readable telemetry.
+- Updated external telemetry contract to include additive CSV field `tokens_reasoning` plus report aggregates (`summary.tokens_reasoning_total`, `summary.tokens_reasoning_avg_per_call`) and per-model breakdown `tokens_reasoning_avg_per_call`.
+- Compatibility rule preserved: existing token fields and report keys remain unchanged; reasoning fields are additive.
+
 ## 2026-03-02_00.52.58 - Caller-facing login precheck contract
 
 - Source: repeated integration runs failed only after queueing work because local Codex login was missing.

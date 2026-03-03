@@ -6,6 +6,18 @@ read_when:
 
 # 07 Analytics Log
 
+## 2026-03-02_21.10.10 - Reasoning-token telemetry capture
+
+- Source: live Codex status output now surfaces output-token reasoning breakdown (for example `output=... (reasoning ...)`), but CSV telemetry previously only kept aggregate output tokens.
+- Added additive telemetry field `tokens_reasoning` in `run_codex_exec`, parsed from usage payloads (`output_tokens_details.reasoning_tokens` and `completion_tokens_details.reasoning_tokens`).
+- Extended dashboard/report surfaces with additive reasoning-token totals/averages so callers can track reasoning spend without parsing raw `usage_json`.
+
+## 2026-03-02_21.07.44 - Fallback token estimates for no-event Codex rows
+
+- Source: local telemetry rows from fake/no-event Codex calls were leaving `tokens_*` blank, reducing caller visibility for recent-job cost summaries.
+- Added fallback token estimation (`chars_div_4`) in `run_codex_exec` when no usage payload is emitted at all.
+- Fallback writes numeric `tokens_input`, `tokens_cached_input`, `tokens_output`, and `tokens_total`, and marks estimate provenance in `usage_json` (`estimated=true`).
+
 ## 2026-02-28_15.20.27 - Telemetry report v2 automation surfaces
 
 - Source: merged historical notes.
@@ -63,4 +75,3 @@ read_when:
 - Source: prompt-text/metric extraction broke when mixed row-width CSV histories hit stale header assumptions.
 - Decision: switch prompt sampling reads to positional CSV handling with length-aware parsing.
 - Outcome: telemetry tooling remains resilient across historical row shapes and avoids malformed index assumptions.
-

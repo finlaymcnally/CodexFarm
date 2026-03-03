@@ -850,6 +850,7 @@ def test_run_telemetry_json_contract(tmp_path: Path) -> None:
             "source": "worker",
             "duration_ms": "2000",
             "tokens_total": "400",
+            "tokens_reasoning": "220",
             "failure_category": "nonzero_exit_no_payload",
             "retry_context_applied": "true",
             "retry_previous_error": (
@@ -898,6 +899,7 @@ def test_run_telemetry_json_contract(tmp_path: Path) -> None:
     assert payload["filters"]["pipeline_id"] is None
     assert payload["matched_rows"] == 1
     assert payload["summary"]["status_counts"]["failed"] == 1
+    assert payload["summary"]["tokens_reasoning_total"] == 220
     assert isinstance(payload["insights"], dict)
     assert isinstance(payload["tuning_playbook"], dict)
     assert payload["terminal_errors"]["count"] == 1

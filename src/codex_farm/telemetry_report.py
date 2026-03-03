@@ -73,6 +73,7 @@ def build_telemetry_report(
     failure_category_counts: dict[str, int] = {}
     duration_values: list[int] = []
     token_total = 0
+    reasoning_token_total = 0
     retry_context_rows = 0
     heads_up_applied_rows = 0
     heads_up_tip_rows = 0
@@ -113,6 +114,7 @@ def build_telemetry_report(
 
         duration_values.append(_as_int(row.get("duration_ms")) or 0)
         token_total += _as_int(row.get("tokens_total")) or 0
+        reasoning_token_total += _as_int(row.get("tokens_reasoning")) or 0
 
         if retry_applied:
             retry_context_rows += 1
@@ -154,6 +156,7 @@ def build_telemetry_report(
                 "other": 0,
                 "_duration_total_ms": 0,
                 "_tokens_total": 0,
+                "_tokens_reasoning_total": 0,
                 "output_missing_rows": 0,
                 "retry_context_rows": 0,
                 "heads_up_rows": 0,
@@ -163,6 +166,9 @@ def build_telemetry_report(
         model_slot[row_status] = int(model_slot.get(row_status, 0)) + 1
         model_slot["_duration_total_ms"] = int(model_slot["_duration_total_ms"]) + (_as_int(row.get("duration_ms")) or 0)
         model_slot["_tokens_total"] = int(model_slot["_tokens_total"]) + (_as_int(row.get("tokens_total")) or 0)
+        model_slot["_tokens_reasoning_total"] = int(model_slot["_tokens_reasoning_total"]) + (
+            _as_int(row.get("tokens_reasoning")) or 0
+        )
         if not output_payload_present:
             model_slot["output_missing_rows"] = int(model_slot["output_missing_rows"]) + 1
         if retry_applied:
@@ -404,6 +410,10 @@ def build_telemetry_report(
             "duration_p95_ms": _percentile(duration_values, 95),
             "tokens_total": token_total,
             "tokens_avg_per_call": int(round(token_total / total_rows)) if total_rows else 0,
+            "tokens_reasoning_total": reasoning_token_total,
+            "tokens_reasoning_avg_per_call": (
+                int(round(reasoning_token_total / total_rows)) if total_rows else 0
+            ),
         },
         "failure_patterns": {
             "failure_categories": _sorted_count_rows(
@@ -1214,6 +1224,7 @@ def _sorted_model_reasoning_breakdown(
         other = int(row.get("other", 0))
         duration_total_ms = int(row.get("_duration_total_ms", 0))
         tokens_total = int(row.get("_tokens_total", 0))
+        tokens_reasoning_total = int(row.get("_tokens_reasoning_total", 0))
         rows.append(
             {
                 "model": row.get("model"),
@@ -1227,6 +1238,9 @@ def _sorted_model_reasoning_breakdown(
                 "failure_rate_pct": _ratio_pct(failed + timeout + other, calls),
                 "duration_avg_ms": int(round(duration_total_ms / calls)) if calls else 0,
                 "tokens_avg_per_call": int(round(tokens_total / calls)) if calls else 0,
+                "tokens_reasoning_avg_per_call": (
+                    int(round(tokens_reasoning_total / calls)) if calls else 0
+                ),
                 "output_missing_rows": int(row.get("output_missing_rows", 0)),
                 "retry_context_rows": int(row.get("retry_context_rows", 0)),
                 "heads_up_rows": int(row.get("heads_up_rows", 0)),
@@ -1396,6 +1410,7 @@ def _recent_rows(rows: list[dict[str, str]], *, max_rows: int) -> list[dict[str,
                 "reasoning_effort": _clean_text(row.get("reasoning_effort")),
                 "duration_ms": _as_int(row.get("duration_ms")) or 0,
                 "tokens_total": _as_int(row.get("tokens_total")) or 0,
+                "tokens_reasoning": _as_int(row.get("tokens_reasoning")) or 0,
                 "attempt_index": _as_int(row.get("attempt_index")),
                 "retry_context_applied": _as_bool(row.get("retry_context_applied")),
                 "heads_up_applied": _as_bool(row.get("heads_up_applied")),

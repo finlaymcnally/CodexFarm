@@ -33,7 +33,11 @@ def test_run_codex_exec_logs_usage_from_jsonl_stdout(monkeypatch, tmp_path: Path
             [
                 '{"type":"thread.started","thread_id":"thread-123"}',
                 "non-json-warning line",
-                '{"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens":10,"output_tokens":30}}',
+                (
+                    '{"type":"turn.completed","usage":{"input_tokens":120,'
+                    '"cached_input_tokens":10,"output_tokens":30,'
+                    '"output_tokens_details":{"reasoning_tokens":19}}}'
+                ),
             ]
         )
         return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
@@ -86,6 +90,7 @@ def test_run_codex_exec_logs_usage_from_jsonl_stdout(monkeypatch, tmp_path: Path
     assert row["tokens_input"] == "120"
     assert row["tokens_cached_input"] == "10"
     assert row["tokens_output"] == "30"
+    assert row["tokens_reasoning"] == "19"
     assert row["tokens_total"] == "150"
     assert row["thread_id"] == "thread-123"
     assert row["source"] == "worker"
@@ -162,6 +167,54 @@ def test_run_codex_exec_logs_logical_schema_path_when_provided(
     assert len(rows) == 1
     row = rows[0]
     assert row["output_schema_path"] == str(logical_schema_path.resolve())
+
+
+def test_run_codex_exec_estimates_tokens_when_usage_events_missing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "out.json"
+    schema_path = tmp_path / "schema.json"
+    log_path = tmp_path / "codex_exec_activity.csv"
+    schema_path.write_text("{}", encoding="utf-8")
+    payload = '{"ok":"OK"}'
+
+    def fake_run(cmd, **kwargs):
+        temp_output = Path(cmd[cmd.index("--output-last-message") + 1])
+        temp_output.write_text(payload, encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    prompt = "INPUT=/tmp/input.json\nReturn JSON."
+    result = run_codex_exec(
+        cd_dir=tmp_path,
+        prompt=prompt,
+        model="gpt-5.3-codex-spark",
+        sandbox="read-only",
+        ask_for_approval="never",
+        web_search="disabled",
+        output_schema=schema_path,
+        output_path=output_path,
+        timeout_seconds=30,
+        usage_log_csv=log_path,
+    )
+
+    assert result.ok is True
+
+    rows = _read_rows(log_path)
+    assert len(rows) == 1
+    row = rows[0]
+    expected_input_tokens = (len(prompt) + 3) // 4
+    expected_output_tokens = (len(payload.encode("utf-8")) + 3) // 4
+    assert row["tokens_input"] == str(expected_input_tokens)
+    assert row["tokens_cached_input"] == "0"
+    assert row["tokens_output"] == str(expected_output_tokens)
+    assert row["tokens_reasoning"] == ""
+    assert row["tokens_total"] == str(expected_input_tokens + expected_output_tokens)
+    usage = json.loads(row["usage_json"])
+    assert usage["estimated"] is True
+    assert usage["method"] == "chars_div_4"
 
 
 def test_run_codex_exec_logs_timeout_and_raises(monkeypatch, tmp_path: Path) -> None:

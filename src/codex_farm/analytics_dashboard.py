@@ -96,6 +96,7 @@ def _build_payload(
     tokens_input_total = 0
     tokens_cached_input_total = 0
     tokens_output_total = 0
+    tokens_reasoning_total = 0
     tokens_total = 0
     output_bytes_total = 0
     accepted_nonzero_exit_count = 0
@@ -120,12 +121,14 @@ def _build_payload(
         row_tokens_input = int(row["tokens_input"])
         row_tokens_cached_input = int(row["tokens_cached_input"])
         row_tokens_output = int(row["tokens_output"])
+        row_tokens_reasoning = int(row["tokens_reasoning"])
         row_tokens_total = int(row["tokens_total"])
         row_output_bytes = int(row["output_bytes"])
 
         tokens_input_total += row_tokens_input
         tokens_cached_input_total += row_tokens_cached_input
         tokens_output_total += row_tokens_output
+        tokens_reasoning_total += row_tokens_reasoning
         tokens_total += row_tokens_total
         output_bytes_total += row_output_bytes
 
@@ -217,6 +220,7 @@ def _build_payload(
             "input": tokens_input_total,
             "cached_input": tokens_cached_input_total,
             "output": tokens_output_total,
+            "reasoning": tokens_reasoning_total,
             "total": tokens_total,
         },
         "bytes": {
@@ -244,6 +248,7 @@ def _normalize_row(raw: dict[str, str]) -> dict[str, object]:
     tokens_input = _as_int(raw.get("tokens_input", "")) or 0
     tokens_cached_input = _as_int(raw.get("tokens_cached_input", "")) or 0
     tokens_output = _as_int(raw.get("tokens_output", "")) or 0
+    tokens_reasoning = _as_int(raw.get("tokens_reasoning", "")) or 0
     tokens_total_raw = _as_int(raw.get("tokens_total", ""))
     if tokens_total_raw is None:
         tokens_total = tokens_input + tokens_output
@@ -262,6 +267,7 @@ def _normalize_row(raw: dict[str, str]) -> dict[str, object]:
         "tokens_input": tokens_input,
         "tokens_cached_input": tokens_cached_input,
         "tokens_output": tokens_output,
+        "tokens_reasoning": tokens_reasoning,
         "tokens_total": tokens_total,
         "source": _label(raw.get("source", ""), fallback="(unknown)"),
         "pipeline_id": _label(raw.get("pipeline_id", ""), fallback="(none)"),
@@ -378,6 +384,7 @@ def _recent_events(*, normalized: list[dict[str, object]], limit: int) -> list[d
                 "sandbox": row["sandbox"],
                 "duration_ms": row["duration_ms"],
                 "tokens_total": row["tokens_total"],
+                "tokens_reasoning": row["tokens_reasoning"],
                 "output_bytes": row["output_bytes"],
                 "prompt_chars": row["prompt_chars"],
                 "exit_code": row["exit_code"],
@@ -1022,6 +1029,7 @@ _DASHBOARD_JS = """\
       ["Calls", formatInt(summary.total_calls || 0)],
       ["Success Rate", formatPercent(summary.success_rate_pct || 0)],
       ["Total Tokens", formatInt(tokens.total || 0)],
+      ["Reasoning Tokens", formatInt(tokens.reasoning || 0)],
       ["Avg Duration", formatInt(duration.avg_ms || 0) + " ms"],
       ["P95 Duration", formatInt(duration.p95_ms || 0) + " ms"],
       ["Unique Runs", formatInt(summary.unique_runs || 0)],

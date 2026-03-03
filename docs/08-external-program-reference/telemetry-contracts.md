@@ -56,7 +56,7 @@ These fields are designed so callers can identify:
 
 ## Codex event and token signals
 
-- `tokens_input`, `tokens_cached_input`, `tokens_output`, `tokens_total`, `usage_json`
+- `tokens_input`, `tokens_cached_input`, `tokens_output`, `tokens_reasoning`, `tokens_total`, `usage_json`
 - `codex_event_count`, `codex_event_types_json`
 - `thread_id`
 
@@ -73,10 +73,12 @@ The report includes:
 
 - `schema_version`: currently `2`.
 - `summary`: status counts, retry/heads-up/rate-limit totals, duration+token aggregates.
+  - Includes additive reasoning-token aggregates: `tokens_reasoning_total`, `tokens_reasoning_avg_per_call`.
 - `failure_patterns`: grouped failure categories, schema paths/issue types, repeated retry errors.
 - `heads_up_patterns`: per-tip effectiveness rows.
 - `insights`: higher-level breakdowns for caller automation:
 - `model_reasoning_breakdown` (success/tokens/duration by model+effort)
+  - Includes additive `tokens_reasoning_avg_per_call` per model+effort row.
 - `prompt_fingerprint_breakdown` (success by prompt hash)
 - `input_failure_hotspots` (problematic input paths)
 - `reasoning_signals` (Codex event stream/turn completion visibility)

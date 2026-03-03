@@ -12,6 +12,7 @@ def _row(**overrides: str) -> dict[str, str]:
         "source": "worker",
         "duration_ms": "1000",
         "tokens_total": "100",
+        "tokens_reasoning": "25",
         "failure_category": "",
         "retry_context_applied": "false",
         "retry_previous_error": "",
@@ -105,6 +106,7 @@ def test_build_telemetry_report_summarizes_patterns_and_recommendations() -> Non
     assert report["summary"]["rate_limit_suspected_rows"] == 1
     assert report["summary"]["retry_context_rows"] == 2
     assert report["summary"]["output_missing_rows"] == 2
+    assert report["summary"]["tokens_reasoning_total"] == 100
     assert report["failure_patterns"]["schema_paths"][0]["path"] == "recipeInstructions[0].text"
     assert report["terminal_errors"]["count"] == 1
 
@@ -190,6 +192,12 @@ def test_build_telemetry_report_emits_insights_and_tuning_playbook() -> None:
         row["model"] == "gpt-5.3-codex-mini" and row["reasoning_effort"] == "low"
         for row in insights["model_reasoning_breakdown"]
     )
+    mini_row = next(
+        row
+        for row in insights["model_reasoning_breakdown"]
+        if row["model"] == "gpt-5.3-codex-mini" and row["reasoning_effort"] == "low"
+    )
+    assert mini_row["tokens_reasoning_avg_per_call"] == 25
 
     recommendation_codes = {
         row["code"]

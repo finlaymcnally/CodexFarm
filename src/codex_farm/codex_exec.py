@@ -146,6 +146,7 @@ _USAGE_LOG_FIELDS = (
     "tokens_input",
     "tokens_cached_input",
     "tokens_output",
+    "tokens_reasoning",
     "tokens_total",
     "usage_json",
     "thread_id",
@@ -266,6 +267,28 @@ def _as_int(value: object) -> int | None:
         except ValueError:
             return None
     return None
+
+
+def _extract_reasoning_tokens(usage: Mapping[str, object]) -> int | None:
+    direct = _as_int(usage.get("reasoning_tokens"))
+    if direct is not None and direct >= 0:
+        return direct
+
+    for detail_key in ("output_tokens_details", "completion_tokens_details"):
+        raw_details = usage.get(detail_key)
+        if not isinstance(raw_details, dict):
+            continue
+        parsed = _as_int(raw_details.get("reasoning_tokens"))
+        if parsed is not None and parsed >= 0:
+            return parsed
+    return None
+
+
+def _estimate_tokens_from_chars(char_count: int) -> int:
+    if char_count <= 0:
+        return 0
+    # Lightweight fallback: common rough rule-of-thumb for English text.
+    return (char_count + 3) // 4
 
 
 def _csv_cell(value: object) -> str:
@@ -392,9 +415,37 @@ def _log_codex_activity(
     tokens_input = _as_int(usage.get("input_tokens"))
     tokens_cached_input = _as_int(usage.get("cached_input_tokens"))
     tokens_output = _as_int(usage.get("output_tokens"))
+    tokens_reasoning = _extract_reasoning_tokens(usage)
     tokens_total = _as_int(usage.get("total_tokens"))
     if tokens_total is None and tokens_input is not None and tokens_output is not None:
         tokens_total = tokens_input + tokens_output
+    usage_json = json.dumps(usage, sort_keys=True) if usage else ""
+
+    if (
+        tokens_input is None
+        and tokens_cached_input is None
+        and tokens_output is None
+        and tokens_total is None
+    ):
+        estimated_input_tokens = _estimate_tokens_from_chars(len(prompt))
+        estimated_output_tokens = _estimate_tokens_from_chars(output_bytes)
+        tokens_input = estimated_input_tokens
+        tokens_cached_input = 0
+        tokens_output = estimated_output_tokens
+        tokens_total = estimated_input_tokens + estimated_output_tokens
+        usage_json = json.dumps(
+            {
+                "estimated": True,
+                "method": "chars_div_4",
+                "input_chars": len(prompt),
+                "output_bytes": output_bytes,
+                "input_tokens": estimated_input_tokens,
+                "cached_input_tokens": 0,
+                "output_tokens": estimated_output_tokens,
+                "total_tokens": tokens_total,
+            },
+            sort_keys=True,
+        )
 
     stderr_tail = _tail_lines(stderr)
     stdout_tail = _tail_lines("\n".join(passthrough_lines))
@@ -442,8 +493,9 @@ def _log_codex_activity(
         "tokens_input": tokens_input,
         "tokens_cached_input": tokens_cached_input,
         "tokens_output": tokens_output,
+        "tokens_reasoning": tokens_reasoning,
         "tokens_total": tokens_total,
-        "usage_json": json.dumps(usage, sort_keys=True) if usage else "",
+        "usage_json": usage_json,
         "thread_id": thread_id,
         "codex_event_count": len(events),
         "codex_event_types_json": json.dumps(event_types, sort_keys=True) if event_types else "",

@@ -34,6 +34,7 @@ def test_stats_dashboard_writes_static_bundle(tmp_path: Path) -> None:
             "tokens_input": "120",
             "tokens_cached_input": "10",
             "tokens_output": "30",
+            "tokens_reasoning": "20",
             "tokens_total": "150",
             "source": "worker",
             "pipeline_id": "demo.echo.v1",
@@ -126,6 +127,7 @@ def test_stats_dashboard_writes_static_bundle(tmp_path: Path) -> None:
     assert payload["duration"]["p95_ms"] == 2400
     assert payload["tokens"]["total"] == 230
     assert payload["tokens"]["cached_input"] == 10
+    assert payload["tokens"]["reasoning"] == 20
 
     source_rows = {row["source"]: row for row in payload["source_breakdown"]}
     assert source_rows["worker"]["calls"] == 2

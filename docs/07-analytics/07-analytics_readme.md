@@ -27,7 +27,7 @@ One row is appended per `run_codex_exec(...)` call.
 - `exit_code`: Codex subprocess exit code (empty for timeout)
 - `accepted_nonzero_exit`: `true` when non-zero exit still produced usable payload
 - `duration_ms`: wall-clock runtime for this Codex call
-- `tokens_input`, `tokens_cached_input`, `tokens_output`, `tokens_total`: usage parsed from Codex JSONL event `turn.completed.usage` when present
+- `tokens_input`, `tokens_cached_input`, `tokens_output`, `tokens_reasoning`, `tokens_total`: usage parsed from Codex JSONL event `turn.completed.usage` when present; when missing entirely, codex-farm writes a fallback estimate (`chars_div_4`) and marks it in `usage_json`
 - `codex_event_count`, `codex_event_types_json`: parsed Codex JSONL event volume/types for each invocation
 - `prompt_text`: full prompt sent to Codex
 - `prompt_sha256`, `prompt_chars`: prompt fingerprint and size
@@ -115,6 +115,7 @@ Output files:
 
 - CSV writes are append-only and header-safe (header is written only when file is empty).
 - Logging is best-effort; telemetry write failures do not fail task execution.
+- Missing `turn.completed` usage no longer leaves blank token fields; fallback estimates are recorded with `usage_json.estimated=true`.
 - Dashboard generation is read-only against telemetry input files.
 - Incremental reused tasks do not emit new telemetry rows because no Codex subprocess runs; inspect reuse via `run create --json`, `process --json`, and `run tasks --json`.
 
@@ -147,6 +148,8 @@ Historical task docs merged into this chunk to preserve telemetry/autotune contr
 - `2026-02-28_15.02.31`: `run telemetry --json` now provides a first-class caller contract for recommendation-ready aggregation over telemetry rows, including terminal task error context when scoped by run.
 - `2026-02-28_15.20.27`: Telemetry report schema version `2` adds caller-automation surfaces (`insights`, `tuning_playbook`) so external programs can auto-select model/effort shifts, tighten prompt pass-forward strategies, and target schema/input fixes from one report payload.
 - `2026-02-28_10.29.20`: `run autotune --json` now translates telemetry playbook entries into concrete override and diff suggestions, so callers can apply remediation quickly without writing their own mapping layer.
+- `2026-03-02_21.08.27`: Rows from no-event/fake Codex runs can legitimately miss `turn.completed.usage`; telemetry now fills `tokens_*` with explicit `chars_div_4` fallback estimates and marks provenance via `usage_json.estimated=true`.
+- `2026-03-02_21.10.10`: Telemetry rows now include `tokens_reasoning` parsed from usage details (`output_tokens_details.reasoning_tokens` / `completion_tokens_details.reasoning_tokens`) so hidden reasoning-token spend is auditable alongside `tokens_output`.
 
 Known trap:
 
@@ -157,4 +160,4 @@ Known trap:
 ### 2026-03-02_01.26.15 - Handle mixed-schema telemetry rows robustly
 - `codex_exec_activity.csv` contains mixed historical schemas while header can remain older.
 - Prompt/text extraction should parse with positional/csv-reader logic and row-length handling, not strict `DictReader` by name.
-- Current payload alignment in this workspace follows 56-column schema shape from `src/codex_farm/codex_exec.py::_USAGE_LOG_FIELDS`.
+- Current payload alignment in this workspace follows 57-column schema shape from `src/codex_farm/codex_exec.py::_USAGE_LOG_FIELDS`.
