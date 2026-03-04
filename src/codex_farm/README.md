@@ -1,5 +1,6 @@
 Core runtime modules: `cli.py` (commands), `db.py` (queue state), `worker.py` (task execution), and `codex_exec.py` (safe subprocess wrapper).
 `codex_exec.py` now also writes per-call telemetry CSV rows (prompt + output fingerprints, token/event usage, timing, failure class, and run/task metadata) to `codex_exec_activity.csv` in the active data dir.
+`codex_exec.py` can also persist per-call trace artifacts (raw event stream + action/reasoning slices) when callers pass `trace_output_path`; worker/one/heads_up paths now wire this automatically.
 `worker.py` treats Codex rate-limit failures (`429`) as adaptive runtime throttling events: tasks are requeued with cooldown/concurrency gating and only become terminal after the configured consecutive-rate-limit budget is exhausted.
 `worker.py` treats Codex auth/session failures (`401/403`, websocket auth denial, login-required text) as immediate terminal task errors with remediation guidance, so runs do not burn retry budget when the local Codex session is not signed in.
 `worker.py` now keeps active leases alive with heartbeat writes and stages outputs under `.codex-farm-stage/` so stale owners cannot overwrite or delete canonical outputs; task rows expose both lease claims (`attempts`) and real execution starts (`execution_attempts`).

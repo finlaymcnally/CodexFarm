@@ -1129,10 +1129,12 @@ def test_one_command_uses_model_override(monkeypatch, tmp_path: Path) -> None:
 
     captured_models: list[str] = []
     captured_efforts: list[str] = []
+    captured_trace_paths: list[Path] = []
 
     def fake_run_codex_exec(**kwargs):
         captured_models.append(str(kwargs["model"]))
         captured_efforts.append(str(kwargs.get("reasoning_effort")))
+        captured_trace_paths.append(Path(kwargs["trace_output_path"]))
         resolved_output_path = kwargs["output_path"]
         resolved_output_path.parent.mkdir(parents=True, exist_ok=True)
         prompt_line = kwargs["prompt"].strip().splitlines()[-1]
@@ -1167,6 +1169,10 @@ def test_one_command_uses_model_override(monkeypatch, tmp_path: Path) -> None:
     assert result.exit_code == 0, result.stderr
     assert captured_models == ["gpt-test-override"]
     assert captured_efforts == ["low"]
+    assert len(captured_trace_paths) == 1
+    assert captured_trace_paths[0].parent.name == ".codex-farm-traces"
+    assert captured_trace_paths[0].name.startswith("one-out-")
+    assert captured_trace_paths[0].name.endswith(".trace.json")
 
 
 def test_one_command_uses_output_schema_override(monkeypatch, tmp_path: Path) -> None:

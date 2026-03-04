@@ -84,6 +84,7 @@ Important details:
 - On accepted output, `os.replace(temp, final)` gives atomic replace semantics.
 - Both stderr and stdout passthrough tails (up to 20 lines each) are returned to callers for failure diagnostics.
 - A usage CSV row is appended per Codex call (`codex_exec_activity.csv`) with timing, token usage (from `turn.completed.usage`), prompt text, exit data, and optional run/task context.
+- Callers can pass `trace_output_path` so each invocation writes a JSON trace artifact with raw Codex JSON events, passthrough lines, and action/reasoning event slices.
 - Telemetry rows also include parsed event types/counts, output payload fingerprint/preview, normalized failure categories, and structured pass-forward context (retry error carry-forward and applied Heads Up tips) for caller-side prompt tuning.
 
 ## 2) Output acceptance rules (`codex_exec.py`)
@@ -169,6 +170,7 @@ Telemetry schema identity rule:
 
 - `run_codex_exec(...)` now accepts both execution schema path and optional logical schema path.
 - Worker passes frozen schema file for execution/validation while telemetry `output_schema_path` preserves logical source schema identity when available.
+- `run_codex_exec(...)` also accepts optional `trace_output_path`; trace writes are best-effort and never fail task execution.
 
 ## 5.1) Verification visibility surfaces
 
@@ -178,6 +180,7 @@ When acceptance behavior changes, keep these caller-facing inspection surfaces a
 - `run errors --json`
 - `run forensics --json`
 - `codex_exec_activity.csv`
+- `.codex-farm-traces/.../*.trace.json` (worker + one) and `heads_up/traces/*.trace.json` (Heads Up distiller)
 
 Together they are the practical debugging contract for why outputs were accepted, retried, or marked terminal.
 

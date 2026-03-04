@@ -227,11 +227,13 @@ def test_worker_loop_processes_task_with_mocked_codex(monkeypatch, tmp_path: Pat
     captured_cd_dirs: list[str] = []
     captured_models: list[str] = []
     captured_efforts: list[str] = []
+    captured_trace_paths: list[Path] = []
 
     def fake_run_codex_exec(**kwargs):
         captured_cd_dirs.append(str(kwargs["cd_dir"]))
         captured_models.append(str(kwargs["model"]))
         captured_efforts.append(str(kwargs.get("reasoning_effort")))
+        captured_trace_paths.append(Path(kwargs["trace_output_path"]))
         out = kwargs["output_path"]
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(_fake_recipe("Mock Chili")), encoding="utf-8")
@@ -262,6 +264,9 @@ def test_worker_loop_processes_task_with_mocked_codex(monkeypatch, tmp_path: Pat
     tasks = list_tasks_for_run(conn, run_id=run_id)
     assert tasks[0]["execution_attempts"] == 1
     assert isinstance(tasks[0]["last_heartbeat_at"], str)
+    assert len(captured_trace_paths) == 1
+    assert captured_trace_paths[0].parent.parent.name == ".codex-farm-traces"
+    assert captured_trace_paths[0].name.endswith(".trace.json")
 
 
 def test_worker_heartbeat_prevents_lease_reclaim_for_long_running_task(

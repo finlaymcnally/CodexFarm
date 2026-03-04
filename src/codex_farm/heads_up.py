@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import datetime
 import json
 from pathlib import Path
 import sqlite3
@@ -303,6 +304,10 @@ def learn_heads_up_from_run(
 
     learn_output_path = data_dir.resolve() / "heads_up" / f"learn-{run_id}.json"
     usage_log_csv = data_dir.resolve() / "codex_exec_activity.csv"
+    trace_stamp = datetime.now().strftime("%Y-%m-%d_%H.%M.%S")
+    trace_output_path = (
+        data_dir.resolve() / "heads_up" / "traces" / f"learn-{run_id}-{trace_stamp}.trace.json"
+    )
     usage_context = {
         "source": "heads_up.learn",
         "pipeline_id": spec.pipeline_id,
@@ -331,6 +336,7 @@ def learn_heads_up_from_run(
             timeout_seconds=spec.codex_timeout_seconds,
             usage_log_csv=usage_log_csv,
             usage_context=usage_context,
+            trace_output_path=trace_output_path,
         )
     except CodexExecTimeoutError as exc:
         return {"tips_added": 0, "warning": str(exc)}

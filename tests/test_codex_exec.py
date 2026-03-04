@@ -293,6 +293,65 @@ def test_run_codex_exec_logs_usage_from_jsonl_stdout(monkeypatch, tmp_path: Path
     assert row["rate_limit_suspected"] == "false"
 
 
+def test_run_codex_exec_persists_trace_artifact_and_trace_metadata(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "out.json"
+    schema_path = tmp_path / "schema.json"
+    log_path = tmp_path / "codex_exec_activity.csv"
+    trace_path = tmp_path / "traces" / "task-1.trace.json"
+    schema_path.write_text("{}", encoding="utf-8")
+
+    def fake_run(cmd, **kwargs):
+        temp_output = Path(cmd[cmd.index("--output-last-message") + 1])
+        temp_output.write_text('{"ok":"OK"}', encoding="utf-8")
+        stdout = "\n".join(
+            [
+                '{"type":"tool.exec","tool":"shell","command":"cat /tmp/input.json"}',
+                '{"type":"reasoning.note","analysis":"plan before response"}',
+                '{"type":"turn.completed","usage":{"input_tokens":20,"output_tokens":5}}',
+            ]
+        )
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_codex_exec(
+        cd_dir=tmp_path,
+        prompt="Return JSON.",
+        model="gpt-5.3-codex-spark",
+        sandbox="read-only",
+        ask_for_approval="never",
+        web_search="disabled",
+        output_schema=schema_path,
+        output_path=output_path,
+        timeout_seconds=30,
+        usage_log_csv=log_path,
+        usage_context={"source": "worker", "run_id": "run-1", "task_id": "task-1"},
+        trace_output_path=trace_path,
+    )
+
+    assert result.ok is True
+    assert trace_path.exists()
+
+    trace_payload = json.loads(trace_path.read_text(encoding="utf-8"))
+    assert trace_payload["event_count"] == 3
+    assert trace_payload["action_event_count"] == 1
+    assert trace_payload["reasoning_event_count"] == 1
+    assert "tool.exec" in trace_payload["action_event_types"]
+    assert "reasoning.note" in trace_payload["reasoning_event_types"]
+
+    rows = _read_rows(log_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["trace_path"] == str(trace_path.resolve())
+    assert row["trace_action_count"] == "1"
+    assert row["trace_reasoning_count"] == "1"
+    assert json.loads(row["trace_action_types_json"]) == ["tool.exec"]
+    assert json.loads(row["trace_reasoning_types_json"]) == ["reasoning.note"]
+
+
 def test_run_codex_exec_logs_logical_schema_path_when_provided(
     monkeypatch,
     tmp_path: Path,

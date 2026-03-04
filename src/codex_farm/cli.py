@@ -1389,6 +1389,13 @@ def one_command(
         "retry_previous_error": None,
     }
     resolved_output_path = out_path.resolve()
+    trace_output_path = (
+        resolved_output_path.parent
+        / ".codex-farm-traces"
+        / (
+            f"one-{resolved_output_path.stem}-{_timestamp_now()}-{uuid.uuid4().hex[:8]}.trace.json"
+        )
+    )
 
     def capture_one_forensics(
         *,
@@ -1457,6 +1464,7 @@ def one_command(
             timeout_seconds=spec.codex_timeout_seconds,
             usage_log_csv=usage_log_csv,
             usage_context=usage_context,
+            trace_output_path=trace_output_path,
         )
     except CodexExecTimeoutError as exc:
         bundle_path = capture_one_forensics(

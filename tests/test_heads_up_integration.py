@@ -114,9 +114,12 @@ def test_heads_up_learning_from_run_a_applies_to_run_b(monkeypatch, tmp_path: Pa
 
     worker_prompts: list[str] = []
     distiller_prompts: list[str] = []
+    worker_trace_paths: list[Path] = []
+    distiller_trace_paths: list[Path] = []
 
     def fake_worker_codex_exec(**kwargs):
         worker_prompts.append(str(kwargs["prompt"]))
+        worker_trace_paths.append(Path(kwargs["trace_output_path"]))
         output_path = kwargs["output_path"]
         output_path.parent.mkdir(parents=True, exist_ok=True)
         source_path = ""
@@ -132,6 +135,7 @@ def test_heads_up_learning_from_run_a_applies_to_run_b(monkeypatch, tmp_path: Pa
 
     def fake_distiller_codex_exec(**kwargs):
         distiller_prompts.append(str(kwargs["prompt"]))
+        distiller_trace_paths.append(Path(kwargs["trace_output_path"]))
         output_path = kwargs["output_path"]
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(
@@ -224,3 +228,9 @@ def test_heads_up_learning_from_run_a_applies_to_run_b(monkeypatch, tmp_path: Pa
     assert "Heads up for this task:" in worker_prompts[1]
     assert "Keep recipeInstructions normalized and return JSON only." in worker_prompts[1]
     assert distiller_prompts
+    assert len(worker_trace_paths) == 2
+    assert all(path.name.endswith(".trace.json") for path in worker_trace_paths)
+    assert all(path.parent.parent.name == ".codex-farm-traces" for path in worker_trace_paths)
+    assert len(distiller_trace_paths) == 2
+    assert all(path.parent.name == "traces" for path in distiller_trace_paths)
+    assert all(path.parent.parent.name == "heads_up" for path in distiller_trace_paths)

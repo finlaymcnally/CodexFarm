@@ -153,6 +153,11 @@ _USAGE_LOG_FIELDS = (
     "thread_id",
     "codex_event_count",
     "codex_event_types_json",
+    "trace_path",
+    "trace_action_count",
+    "trace_action_types_json",
+    "trace_reasoning_count",
+    "trace_reasoning_types_json",
     "prompt_chars",
     "prompt_sha256",
     "prompt_text",
@@ -247,6 +252,31 @@ _KNOWN_USAGE_LOG_ROW_SCHEMAS = (
 )
 _USAGE_LOG_LOCK = threading.Lock()
 _OUTPUT_PREVIEW_BYTES = 2400
+_TRACE_ACTION_TYPE_HINTS = (
+    "action",
+    "tool",
+    "exec",
+    "shell",
+    "bash",
+    "search",
+    "read",
+    "write",
+    "open",
+    "click",
+    "patch",
+    "command",
+)
+_TRACE_ACTION_KEY_HINTS = (
+    "tool",
+    "action",
+    "command",
+    "file",
+    "path",
+    "query",
+    "url",
+)
+_TRACE_REASONING_TYPE_HINTS = ("reason", "thinking", "analysis", "deliberat")
+_TRACE_REASONING_KEY_HINTS = ("reasoning", "thinking", "analysis", "deliberat")
 
 
 def _tail_lines(text: str, max_lines: int = 20) -> str:
@@ -301,6 +331,188 @@ def _event_types(events: list[dict[str, object]]) -> list[str]:
         seen.add(event_type)
         ordered.append(event_type)
     return ordered
+
+
+def _event_type_name(event: Mapping[str, object]) -> str:
+    raw_type = event.get("type")
+    if not isinstance(raw_type, str):
+        return ""
+    return raw_type.strip()
+
+
+def _value_contains_key_hints(
+    value: object,
+    *,
+    key_hints: tuple[str, ...],
+    max_depth: int = 4,
+) -> bool:
+    if max_depth < 0:
+        return False
+    if isinstance(value, dict):
+        lowered_hints = tuple(item.lower() for item in key_hints)
+        for key, nested in value.items():
+            key_text = str(key).lower()
+            if any(hint in key_text for hint in lowered_hints):
+                return True
+            if _value_contains_key_hints(nested, key_hints=key_hints, max_depth=max_depth - 1):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(
+            _value_contains_key_hints(item, key_hints=key_hints, max_depth=max_depth - 1)
+            for item in value
+        )
+    return False
+
+
+def _event_matches_trace_hints(
+    event: Mapping[str, object],
+    *,
+    type_hints: tuple[str, ...],
+    key_hints: tuple[str, ...],
+) -> bool:
+    event_type = _event_type_name(event).lower()
+    if event_type and any(hint in event_type for hint in type_hints):
+        return True
+    return _value_contains_key_hints(event, key_hints=key_hints)
+
+
+def _json_safe(value: object) -> object:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    return str(value)
+
+
+def _persist_trace_artifact(
+    *,
+    trace_output_path: Path | None,
+    usage_context: Mapping[str, object] | None,
+    started_at: datetime,
+    finished_at: datetime,
+    duration_ms: int,
+    status: str,
+    exit_code: int | None,
+    model: str,
+    reasoning_effort: str | None,
+    cmd: list[str],
+    prompt: str,
+    stdout: str,
+    stderr: str,
+    events: list[dict[str, object]],
+    passthrough_lines: list[str],
+) -> tuple[Path | None, int | None, list[str], int | None, list[str]]:
+    if trace_output_path is None:
+        return None, None, [], None, []
+
+    action_events: list[dict[str, object]] = []
+    reasoning_events: list[dict[str, object]] = []
+    for event in events:
+        if _event_matches_trace_hints(
+            event,
+            type_hints=_TRACE_ACTION_TYPE_HINTS,
+            key_hints=_TRACE_ACTION_KEY_HINTS,
+        ):
+            action_events.append(event)
+        if _event_matches_trace_hints(
+            event,
+            type_hints=_TRACE_REASONING_TYPE_HINTS,
+            key_hints=_TRACE_REASONING_KEY_HINTS,
+        ):
+            reasoning_events.append(event)
+
+    action_types = _event_types(action_events)
+    reasoning_types = _event_types(reasoning_events)
+    artifact = {
+        "schema_version": 1,
+        "captured_at_utc": _utc_ts(datetime.now(UTC)),
+        "started_at_utc": _utc_ts(started_at),
+        "finished_at_utc": _utc_ts(finished_at),
+        "duration_ms": duration_ms,
+        "status": status,
+        "exit_code": exit_code,
+        "model": model,
+        "reasoning_effort": reasoning_effort,
+        "source": (usage_context or {}).get("source"),
+        "pipeline_id": (usage_context or {}).get("pipeline_id"),
+        "run_id": (usage_context or {}).get("run_id"),
+        "task_id": (usage_context or {}).get("task_id"),
+        "worker_id": (usage_context or {}).get("worker_id"),
+        "input_path": (usage_context or {}).get("input_path"),
+        "command": cmd,
+        "prompt_text": prompt,
+        "stdout_raw": stdout,
+        "stderr_raw": stderr,
+        "stdout_passthrough_lines": passthrough_lines,
+        "stdout_tail": _tail_lines("\n".join(passthrough_lines)),
+        "stderr_tail": _tail_lines(stderr),
+        "event_count": len(events),
+        "event_types": _event_types(events),
+        "action_event_count": len(action_events),
+        "action_event_types": action_types,
+        "reasoning_event_count": len(reasoning_events),
+        "reasoning_event_types": reasoning_types,
+        "events": events,
+        "action_events": action_events,
+        "reasoning_events": reasoning_events,
+        "usage_context": _json_safe(dict(usage_context or {})),
+    }
+
+    try:
+        trace_output_path.parent.mkdir(parents=True, exist_ok=True)
+        trace_output_path.write_text(
+            json.dumps(artifact, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+    except (OSError, TypeError, ValueError):
+        return None, None, [], None, []
+
+    return (
+        trace_output_path.resolve(),
+        len(action_events),
+        action_types,
+        len(reasoning_events),
+        reasoning_types,
+    )
+
+
+def _extract_event_error_lines(events: list[dict[str, object]]) -> list[str]:
+    lines: list[str] = []
+    seen: set[str] = set()
+    for event in events:
+        raw_type = event.get("type")
+        event_type = raw_type.strip() if isinstance(raw_type, str) else ""
+        if event_type not in {"error", "turn.failed"}:
+            continue
+        candidates: list[str] = []
+        for key in ("message", "reason"):
+            value = event.get(key)
+            if isinstance(value, str) and value.strip():
+                candidates.append(value.strip())
+        raw_error = event.get("error")
+        if isinstance(raw_error, str) and raw_error.strip():
+            candidates.append(raw_error.strip())
+        elif isinstance(raw_error, dict):
+            for key in ("message", "reason", "code", "type"):
+                value = raw_error.get(key)
+                if isinstance(value, str) and value.strip():
+                    candidates.append(value.strip())
+            if not candidates:
+                serialized = json.dumps(raw_error, sort_keys=True)
+                if serialized.strip():
+                    candidates.append(serialized.strip())
+        for candidate in candidates:
+            line = f"{event_type}: {candidate}"
+            if line in seen:
+                continue
+            seen.add(line)
+            lines.append(line)
+    return lines
 
 
 def _extract_usage(
@@ -570,6 +782,11 @@ def _log_codex_activity(
     prompt: str,
     stdout: str,
     stderr: str,
+    trace_path: Path | None,
+    trace_action_count: int | None,
+    trace_action_types: list[str] | None,
+    trace_reasoning_count: int | None,
+    trace_reasoning_types: list[str] | None,
 ) -> None:
     if usage_log_csv is None:
         return
@@ -664,6 +881,15 @@ def _log_codex_activity(
         "thread_id": thread_id,
         "codex_event_count": len(events),
         "codex_event_types_json": json.dumps(event_types, sort_keys=True) if event_types else "",
+        "trace_path": str(trace_path.resolve()) if trace_path is not None else "",
+        "trace_action_count": trace_action_count,
+        "trace_action_types_json": (
+            json.dumps(trace_action_types, sort_keys=True) if trace_action_types else ""
+        ),
+        "trace_reasoning_count": trace_reasoning_count,
+        "trace_reasoning_types_json": (
+            json.dumps(trace_reasoning_types, sort_keys=True) if trace_reasoning_types else ""
+        ),
         "prompt_chars": len(prompt),
         "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
         "prompt_text": prompt,
@@ -714,6 +940,7 @@ def run_codex_exec(
     reasoning_effort: str | None = None,
     usage_log_csv: Path | None = None,
     usage_context: Mapping[str, object] | None = None,
+    trace_output_path: Path | None = None,
 ) -> CodexExecResult:
     """Run codex exec and atomically move output into place on success."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -774,6 +1001,7 @@ def run_codex_exec(
     except subprocess.TimeoutExpired as exc:
         timeout_stdout = _coerce_text(exc.stdout)
         timeout_stderr = _coerce_text(exc.stderr)
+        timeout_events, timeout_passthrough_lines = _parse_jsonl_events(timeout_stdout)
         timeout_stdout_tail = _tail_lines(timeout_stdout)
         timeout_stderr_tail = _tail_lines(timeout_stderr)
         temp_has_payload = temp_output_path.exists() and temp_output_path.stat().st_size > 0
@@ -789,6 +1017,29 @@ def run_codex_exec(
             temp_output_path.unlink(missing_ok=True)
         finished_at = datetime.now(UTC)
         duration_ms = int((time.perf_counter() - started_clock) * 1000)
+        (
+            trace_path,
+            trace_action_count,
+            trace_action_types,
+            trace_reasoning_count,
+            trace_reasoning_types,
+        ) = _persist_trace_artifact(
+            trace_output_path=trace_output_path,
+            usage_context=usage_context,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_ms=duration_ms,
+            status="timeout",
+            exit_code=None,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            cmd=cmd,
+            prompt=prompt,
+            stdout=timeout_stdout,
+            stderr=timeout_stderr,
+            events=timeout_events,
+            passthrough_lines=timeout_passthrough_lines,
+        )
         _log_codex_activity(
             usage_log_csv=usage_log_csv,
             usage_context=usage_context,
@@ -816,6 +1067,11 @@ def run_codex_exec(
             prompt=prompt,
             stdout=timeout_stdout,
             stderr=timeout_stderr,
+            trace_path=trace_path,
+            trace_action_count=trace_action_count,
+            trace_action_types=trace_action_types,
+            trace_reasoning_count=trace_reasoning_count,
+            trace_reasoning_types=trace_reasoning_types,
         )
         raise CodexExecTimeoutError(
             f"codex exec timed out after {timeout_seconds}s",
@@ -823,10 +1079,16 @@ def run_codex_exec(
             stderr_tail=timeout_stderr_tail,
         ) from exc
 
-    passthrough_lines = _parse_jsonl_events(proc.stdout)[1]
+    events, passthrough_lines = _parse_jsonl_events(proc.stdout)
+    event_error_lines = _extract_event_error_lines(events)
     stderr_tail = _tail_lines(proc.stderr)
     stdout_tail = _tail_lines("\n".join(passthrough_lines))
-    if not stderr_tail and stdout_tail:
+    event_error_tail = _tail_lines("\n".join(event_error_lines))
+    if event_error_tail:
+        stderr_tail = _tail_lines(
+            "\n".join(part for part in (stderr_tail, event_error_tail) if part.strip())
+        )
+    elif not stderr_tail and stdout_tail:
         stderr_tail = stdout_tail
     temp_has_payload = temp_output_path.exists() and temp_output_path.stat().st_size > 0
     output_bytes = temp_output_path.stat().st_size if temp_has_payload else 0
@@ -869,6 +1131,29 @@ def run_codex_exec(
 
     finished_at = datetime.now(UTC)
     duration_ms = int((time.perf_counter() - started_clock) * 1000)
+    (
+        trace_path,
+        trace_action_count,
+        trace_action_types,
+        trace_reasoning_count,
+        trace_reasoning_types,
+    ) = _persist_trace_artifact(
+        trace_output_path=trace_output_path,
+        usage_context=usage_context,
+        started_at=started_at,
+        finished_at=finished_at,
+        duration_ms=duration_ms,
+        status=status,
+        exit_code=proc.returncode,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        cmd=cmd,
+        prompt=prompt,
+        stdout=proc.stdout,
+        stderr=proc.stderr,
+        events=events,
+        passthrough_lines=passthrough_lines,
+    )
     _log_codex_activity(
         usage_log_csv=usage_log_csv,
         usage_context=usage_context,
@@ -896,5 +1181,10 @@ def run_codex_exec(
         prompt=prompt,
         stdout=proc.stdout,
         stderr=proc.stderr,
+        trace_path=trace_path,
+        trace_action_count=trace_action_count,
+        trace_action_types=trace_action_types,
+        trace_reasoning_count=trace_reasoning_count,
+        trace_reasoning_types=trace_reasoning_types,
     )
     return result

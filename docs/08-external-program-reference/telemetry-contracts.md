@@ -52,8 +52,10 @@ These fields are designed so callers can identify:
 - `output_payload_present`, `output_bytes`, `output_path`
 - `output_sha256`
 - `output_preview`, `output_preview_chars`, `output_preview_truncated`
+- `trace_path`, `trace_action_count`, `trace_action_types_json`, `trace_reasoning_count`, `trace_reasoning_types_json`
 
 `output_preview` is intentionally truncated and should be treated as diagnostic context, not canonical output. Use `output_path` for full payload retrieval.
+`trace_path` points to a full invocation trace JSON artifact (when trace capture was enabled by the caller path) that includes raw events and action/reasoning slices.
 
 ## Codex event and token signals
 

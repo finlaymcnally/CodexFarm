@@ -63,6 +63,7 @@ from .schema_utils import SchemaValidationError, validate_json_file_against_sche
 CODEX_REASONING_EFFORT_VALUES = {"none", "minimal", "low", "medium", "high", "xhigh"}
 RECIPEIMPORT_BENCHMARK_MODE_VALUES = {RECIPEIMPORT_BENCHMARK_MODE}
 _INVALID_JSON_SCHEMA_PATTERN = re.compile(r"invalid_json_schema", re.IGNORECASE)
+_CONTENT_FILTER_PATTERN = re.compile(r"\bcontent_filter\b", re.IGNORECASE)
 
 
 def _extract_invalid_json_schema_message(text: str) -> str | None:
@@ -70,6 +71,12 @@ def _extract_invalid_json_schema_message(text: str) -> str | None:
         if _INVALID_JSON_SCHEMA_PATTERN.search(line):
             return line.strip()
     return None
+
+
+def _is_content_filter_message(text: str) -> bool:
+    if not text.strip():
+        return False
+    return _CONTENT_FILTER_PATTERN.search(text) is not None
 
 
 class WorkerRuntimeFailure(RuntimeError):
@@ -139,6 +146,15 @@ def _stage_output_path(
     output_ext: str,
 ) -> Path:
     return run_output_dir / ".codex-farm-stage" / task_id / f"{lease_token}{output_ext}"
+
+
+def _trace_output_path(
+    run_output_dir: Path,
+    *,
+    task_id: str,
+    lease_token: str,
+) -> Path:
+    return run_output_dir / ".codex-farm-traces" / task_id / f"{lease_token}.trace.json"
 
 
 def _promote_staged_output_if_owner(
@@ -868,6 +884,11 @@ def worker_loop(
             lease_token=task_lease_token,
             output_ext="".join(final_output_path.suffixes),
         )
+        trace_output_path = _trace_output_path(
+            Path(run["output_dir"]).resolve(),
+            task_id=str(task["task_id"]),
+            lease_token=task_lease_token,
+        )
         staged_output_path.unlink(missing_ok=True)
         try:
             cd_dir = _resolve_task_cd_dir(
@@ -978,6 +999,7 @@ def worker_loop(
                 timeout_seconds=codex_timeout_seconds,
                 usage_log_csv=usage_log_csv,
                 usage_context=usage_context,
+                trace_output_path=trace_output_path,
             )
             codex_stdout_tail = result.stdout_tail
             codex_stderr_tail = result.stderr_tail
@@ -1009,6 +1031,16 @@ def worker_loop(
                             f"{invalid_schema_message}"
                         ),
                         failure_category="invalid_json_schema",
+                        stdout_tail=result.stdout_tail,
+                        stderr_tail=result.stderr_tail,
+                    )
+                if _is_content_filter_message(stderr):
+                    raise WorkerRuntimeFailure(
+                        (
+                            f"codex content_filter blocked response stream (exit={result.exit_code}): "
+                            f"{stderr}"
+                        ),
+                        failure_category="content_filter",
                         stdout_tail=result.stdout_tail,
                         stderr_tail=result.stderr_tail,
                     )
@@ -1320,6 +1352,7 @@ def worker_loop(
             terminal_failure = (
                 failure_category == "auth_failure"
                 or failure_category == "invalid_json_schema"
+                or failure_category == "content_filter"
                 or failure_category == "benchmark_contract_error"
                 or effective_execution_attempt_index >= max_attempts
             )
