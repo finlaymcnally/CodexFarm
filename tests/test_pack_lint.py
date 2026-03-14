@@ -17,6 +17,8 @@ def _write_pipeline(
     prompt_rel: str,
     schema_rel: str,
     prompt_input_mode: str | None = None,
+    codex_execution_context: str | None = None,
+    codex_home_profile: str | None = None,
 ) -> None:
     payload = {
         "pipeline_id": pipeline_id,
@@ -34,6 +36,10 @@ def _write_pipeline(
     }
     if prompt_input_mode is not None:
         payload["prompt_input_mode"] = prompt_input_mode
+    if codex_execution_context is not None:
+        payload["codex_execution_context"] = codex_execution_context
+    if codex_home_profile is not None:
+        payload["codex_home_profile"] = codex_home_profile
     (root / "pipelines" / filename).write_text(
         json.dumps(payload, indent=2) + "\n",
         encoding="utf-8",
@@ -170,6 +176,26 @@ def test_lint_pack_accepts_inline_prompt_with_input_text_token(tmp_path: Path) -
         and finding.pipeline_id == "demo.inline.ok.v1"
         for finding in report.findings
     )
+
+
+def test_lint_pack_accepts_scratch_execution_context_fields(tmp_path: Path) -> None:
+    _make_pack_root(tmp_path)
+    _write_pipeline(
+        tmp_path,
+        filename="demo.scratch.v1.json",
+        pipeline_id="demo.scratch.v1",
+        prompt_rel="prompts/demo_scratch_v1.txt",
+        schema_rel="schemas/demo_scratch_v1.schema.json",
+        codex_execution_context="scratch",
+        codex_home_profile="recipe",
+    )
+    (tmp_path / "prompts" / "demo_scratch_v1.txt").write_text("INPUT={{INPUT_PATH}}\n", encoding="utf-8")
+    _write_json(tmp_path / "schemas" / "demo_scratch_v1.schema.json", _demo_schema_payload())
+    _write_heads_up_assets(tmp_path)
+
+    report = lint_pack(root=tmp_path)
+
+    assert report.error_count == 0
 
 
 def test_lint_pack_reports_duplicate_pipeline_ids(tmp_path: Path) -> None:

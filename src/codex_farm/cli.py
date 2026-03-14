@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import threading
 import time
 from typing import Callable
@@ -44,6 +45,7 @@ from .db import (
     set_run_control_state,
 )
 from .doctor import run_codex_execution_checks, run_doctor_checks
+from .execution_context import prepare_execution_context
 from .model_catalog import list_codex_models
 from .pack_lint import LintReport, lint_exit_code, lint_pack, lint_schema_file
 from .heads_up import (
@@ -119,17 +121,21 @@ def _ensure_codex_login_precheck_or_die(
     enabled: bool,
     model: str | None = None,
     reasoning_effort: str | None = None,
+    env_overrides: dict[str, str] | None = None,
 ) -> None:
     if not enabled:
         return
     if _is_truthy(os.environ.get(LOGIN_PRECHECK_SKIP_ENV)):
         return
-    checks, all_ok = run_codex_execution_checks(
-        login_timeout_seconds=20,
-        smoke_timeout_seconds=60,
-        model=model,
-        reasoning_effort=reasoning_effort,
-    )
+    check_kwargs: dict[str, object] = {
+        "login_timeout_seconds": 20,
+        "smoke_timeout_seconds": 60,
+        "model": model,
+        "reasoning_effort": reasoning_effort,
+    }
+    if env_overrides is not None:
+        check_kwargs["env_overrides"] = env_overrides
+    checks, all_ok = run_codex_execution_checks(**check_kwargs)
     if all_ok:
         return
     failed_check = next((check for check in checks if not check.ok), checks[0])
@@ -176,6 +182,43 @@ def _resolve_workspace_root_override_or_die(
             f"--workspace-root must point to an existing directory: {resolved}"
         )
     return resolved
+
+
+def _resolve_codex_home_override_or_die(codex_home: Path | None) -> Path | None:
+    if codex_home is None:
+        return None
+    return codex_home.expanduser().resolve()
+
+
+def _codex_home_profile_env_var(profile: str | None) -> str | None:
+    if profile is None:
+        return None
+    normalized = re.sub(r"[^A-Za-z0-9]+", "_", profile.strip()).strip("_").upper()
+    if not normalized:
+        return None
+    return f"CODEX_FARM_CODEX_HOME_{normalized}"
+
+
+def _resolve_codex_home_path(
+    *,
+    explicit_codex_home: Path | None,
+    pipeline: PipelineSpec,
+) -> Path | None:
+    if explicit_codex_home is not None:
+        return explicit_codex_home
+    profile_env = _codex_home_profile_env_var(pipeline.codex_home_profile)
+    if profile_env is None:
+        return None
+    configured = os.environ.get(profile_env)
+    if configured is None or not configured.strip():
+        return None
+    return Path(configured).expanduser().resolve()
+
+
+def _codex_home_env_overrides(codex_home_path: Path | None) -> dict[str, str] | None:
+    if codex_home_path is None:
+        return None
+    return {"CODEX_HOME": str(codex_home_path)}
 
 
 def _resolve_output_schema_override_or_die(
@@ -1293,6 +1336,11 @@ def one_command(
         "--workspace-root",
         help="Explicit override for codex exec --cd.",
     ),
+    codex_home: Path | None = typer.Option(
+        None,
+        "--codex-home",
+        help="Explicit override for CODEX_HOME during codex exec.",
+    ),
     output_schema: Path | None = typer.Option(
         None,
         "--output-schema",
@@ -1321,6 +1369,7 @@ def one_command(
     model_override = _resolve_model_override_or_die(model)
     effort_override = _resolve_reasoning_effort_override_or_die(reasoning_effort)
     workspace_override = _resolve_workspace_root_override_or_die(workspace_root)
+    codex_home_override = _resolve_codex_home_override_or_die(codex_home)
     output_schema_override = _resolve_output_schema_override_or_die(output_schema)
     default_data_dir = resolve_data_dir(Path("./var"))
     usage_log_csv = default_data_dir / "codex_exec_activity.csv"
@@ -1331,11 +1380,16 @@ def one_command(
         if effort_override is not None
         else spec.codex_reasoning_effort
     )
+    selected_codex_home = _resolve_codex_home_path(
+        explicit_codex_home=codex_home_override,
+        pipeline=spec,
+    )
     _ensure_codex_login_precheck_or_die(
         command_name="one",
         enabled=login_precheck,
         model=selected_model,
         reasoning_effort=selected_effort,
+        env_overrides=_codex_home_env_overrides(selected_codex_home),
     )
     selected_output_schema = (
         output_schema_override
@@ -1451,11 +1505,23 @@ def one_command(
                     "codex_ask_for_approval": spec.codex_ask_for_approval,
                     "codex_web_search": spec.codex_web_search,
                     "codex_timeout_seconds": spec.codex_timeout_seconds,
-                    "cd_dir": str(cd_dir),
+                    "project_cd_dir": str(cd_dir),
+                    "cd_dir": str(
+                        prepared_execution.cd_dir if prepared_execution is not None else cd_dir
+                    ),
                     "input_path": str(input_path),
                     "output_path": str(resolved_output_path),
                     "heads_up_applied": heads_up_tip_count > 0,
                     "heads_up_tip_count": heads_up_tip_count,
+                    "codex_execution_context": spec.codex_execution_context,
+                    "codex_home_path": (
+                        str(selected_codex_home) if selected_codex_home is not None else None
+                    ),
+                    **(
+                        prepared_execution.metadata
+                        if prepared_execution is not None
+                        else {}
+                    ),
                 },
             ),
         )
@@ -1463,9 +1529,17 @@ def one_command(
             return None
         return record.bundle_dir
 
+    prepared_execution = None
     try:
+        prepared_execution = prepare_execution_context(
+            execution_context=spec.codex_execution_context,
+            project_cd_dir=cd_dir,
+            data_dir=default_data_dir,
+            source="one",
+            codex_home_path=selected_codex_home,
+        )
         result = run_codex_exec(
-            cd_dir=cd_dir,
+            cd_dir=prepared_execution.cd_dir,
             prompt=prompt,
             model=selected_model,
             sandbox=spec.codex_sandbox,
@@ -1475,8 +1549,15 @@ def one_command(
             output_schema=selected_output_schema,
             output_path=out_path.resolve(),
             timeout_seconds=spec.codex_timeout_seconds,
+            env_overrides=prepared_execution.env_overrides,
             usage_log_csv=usage_log_csv,
-            usage_context=usage_context,
+            usage_context={
+                **usage_context,
+                "execution_context": spec.codex_execution_context,
+                "codex_home_path": (
+                    str(selected_codex_home) if selected_codex_home is not None else None
+                ),
+            },
             trace_output_path=trace_output_path,
         )
     except CodexExecTimeoutError as exc:
@@ -1573,6 +1654,9 @@ def one_command(
         if bundle_path is not None:
             typer.echo(f"Forensics bundle: {bundle_path}", err=True)
         raise typer.Exit(1)
+    finally:
+        if prepared_execution is not None and prepared_execution.scratch_root is not None:
+            shutil.rmtree(prepared_execution.scratch_root, ignore_errors=True)
 
     typer.echo(f"Wrote output: {resolved_output_path}")
 
@@ -1608,6 +1692,11 @@ def run_create_command(
         None,
         "--workspace-root",
         help="Explicit override for codex exec --cd.",
+    ),
+    codex_home: Path | None = typer.Option(
+        None,
+        "--codex-home",
+        help="Explicit override for CODEX_HOME during codex exec.",
     ),
     output_schema: Path | None = typer.Option(
         None,
@@ -1653,6 +1742,7 @@ def run_create_command(
     model_override = _resolve_model_override_or_die(model)
     effort_override = _resolve_reasoning_effort_override_or_die(reasoning_effort)
     workspace_override = _resolve_workspace_root_override_or_die(workspace_root)
+    codex_home_override = _resolve_codex_home_override_or_die(codex_home)
     output_schema_override = _resolve_output_schema_override_or_die(output_schema)
     benchmark_mode_override = _resolve_recipeimport_benchmark_mode_or_die(
         recipeimport_benchmark_mode
@@ -1667,6 +1757,10 @@ def run_create_command(
         effort_override
         if effort_override is not None
         else spec.codex_reasoning_effort
+    )
+    selected_codex_home = _resolve_codex_home_path(
+        explicit_codex_home=codex_home_override,
+        pipeline=spec,
     )
     selected_output_schema = output_schema_override or spec.output_schema_path
     data_dir_resolved = resolve_data_dir(data_dir)
@@ -1685,6 +1779,8 @@ def run_create_command(
     }
     if workspace_override is not None:
         config["workspace_root"] = str(workspace_override)
+    if selected_codex_home is not None:
+        config["codex_home_path"] = str(selected_codex_home)
     if model_override is not None:
         config["codex_model"] = model_override
     if effort_override is not None:
@@ -1719,6 +1815,8 @@ def run_create_command(
         "total": task_count,
         "farm_root": str(farm_root),
         "workspace_root": str(workspace_override) if workspace_override is not None else None,
+        "codex_execution_context": spec.codex_execution_context,
+        "codex_home_path": str(selected_codex_home) if selected_codex_home is not None else None,
         "codex_model": selected_model,
         "codex_reasoning_effort": selected_effort,
         "output_schema_path": str(selected_output_schema),
@@ -2252,10 +2350,26 @@ def worker_command(
     ),
 ) -> None:
     """Run a worker loop."""
-    _ensure_codex_login_precheck_or_die(command_name="worker", enabled=login_precheck)
     farm_root = _resolve_farm_root_or_die(root) if root is not None else None
     data_dir_resolved = resolve_data_dir(data_dir)
     _init_data_dir(data_dir_resolved)
+    precheck_env_overrides = None
+    if run_id is not None:
+        conn = open_db(db_path_for_data_dir(data_dir_resolved))
+        init_db(conn)
+        try:
+            run = get_run(conn, run_id)
+        except KeyError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        run_config = _parse_json_object(run.get("config_json"))
+        precheck_env_overrides = _codex_home_env_overrides(
+            _config_path(run_config.get("codex_home_path"))
+        )
+    _ensure_codex_login_precheck_or_die(
+        command_name="worker",
+        enabled=login_precheck,
+        env_overrides=precheck_env_overrides,
+    )
 
     effective_worker_id = worker_id or f"worker-{uuid.uuid4().hex[:8]}"
     code = worker_loop(
@@ -2306,6 +2420,11 @@ def process_command(
         None,
         "--workspace-root",
         help="Explicit override for codex exec --cd.",
+    ),
+    codex_home: Path | None = typer.Option(
+        None,
+        "--codex-home",
+        help="Explicit override for CODEX_HOME during codex exec.",
     ),
     output_schema: Path | None = typer.Option(
         None,
@@ -2383,6 +2502,7 @@ def process_command(
     model_override = _resolve_model_override_or_die(model)
     effort_override = _resolve_reasoning_effort_override_or_die(reasoning_effort)
     workspace_override = _resolve_workspace_root_override_or_die(workspace_root)
+    codex_home_override = _resolve_codex_home_override_or_die(codex_home)
     output_schema_override = _resolve_output_schema_override_or_die(output_schema)
     benchmark_mode_override = _resolve_recipeimport_benchmark_mode_or_die(
         recipeimport_benchmark_mode
@@ -2399,11 +2519,16 @@ def process_command(
         if effort_override is not None
         else spec.codex_reasoning_effort
     )
+    selected_codex_home = _resolve_codex_home_path(
+        explicit_codex_home=codex_home_override,
+        pipeline=spec,
+    )
     _ensure_codex_login_precheck_or_die(
         command_name="process",
         enabled=login_precheck,
         model=selected_model,
         reasoning_effort=selected_effort,
+        env_overrides=_codex_home_env_overrides(selected_codex_home),
     )
     selected_output_schema = output_schema_override or spec.output_schema_path
 
@@ -2424,6 +2549,8 @@ def process_command(
     }
     if workspace_override is not None:
         config["workspace_root"] = str(workspace_override)
+    if selected_codex_home is not None:
+        config["codex_home_path"] = str(selected_codex_home)
     if model_override is not None:
         config["codex_model"] = model_override
     if effort_override is not None:
@@ -2540,6 +2667,8 @@ def process_command(
             "output_dir": str(output_dir_resolved),
             "farm_root": str(farm_root),
             "workspace_root": str(workspace_override) if workspace_override is not None else None,
+            "codex_execution_context": spec.codex_execution_context,
+            "codex_home_path": str(selected_codex_home) if selected_codex_home is not None else None,
             "codex_model": selected_model,
             "codex_reasoning_effort": selected_effort,
             "output_schema_path": str(selected_output_schema),
@@ -2602,6 +2731,11 @@ def go_command(
         "--workspace-root",
         help="Explicit override for codex exec --cd.",
     ),
+    codex_home: Path | None = typer.Option(
+        None,
+        "--codex-home",
+        help="Explicit override for CODEX_HOME during codex exec.",
+    ),
     output_schema: Path | None = typer.Option(
         None,
         "--output-schema",
@@ -2650,6 +2784,7 @@ def go_command(
     model_override = _resolve_model_override_or_die(model)
     effort_override = _resolve_reasoning_effort_override_or_die(reasoning_effort)
     workspace_override = _resolve_workspace_root_override_or_die(workspace_root)
+    codex_home_override = _resolve_codex_home_override_or_die(codex_home)
     output_schema_override = _resolve_output_schema_override_or_die(output_schema)
     benchmark_mode_override = _resolve_recipeimport_benchmark_mode_or_die(
         recipeimport_benchmark_mode
@@ -2686,11 +2821,16 @@ def go_command(
         if effort_override is not None
         else selected.codex_reasoning_effort
     )
+    selected_codex_home = _resolve_codex_home_path(
+        explicit_codex_home=codex_home_override,
+        pipeline=selected,
+    )
     _ensure_codex_login_precheck_or_die(
         command_name="go",
         enabled=login_precheck,
         model=selected_model,
         reasoning_effort=selected_effort,
+        env_overrides=_codex_home_env_overrides(selected_codex_home),
     )
     selected_output_schema = output_schema_override or selected.output_schema_path
 
@@ -2720,6 +2860,8 @@ def go_command(
     }
     if workspace_override is not None:
         config["workspace_root"] = str(workspace_override)
+    if selected_codex_home is not None:
+        config["codex_home_path"] = str(selected_codex_home)
     if model_override is not None:
         config["codex_model"] = model_override
     if effort_override is not None:

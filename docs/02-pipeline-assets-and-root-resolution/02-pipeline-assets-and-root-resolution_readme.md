@@ -116,6 +116,10 @@ Each JSON file is parsed through `PipelineSpecModel`:
     - `"asset_root"`
     - `"input_dir"`
     - `"input_file_dir"`
+  - `codex_execution_context`: `"project"` with allowed values:
+    - `"project"`
+    - `"scratch"`
+  - `codex_home_profile`: `null` (optional profile name used to resolve `CODEX_FARM_CODEX_HOME_<PROFILE>`)
   - `prompt_input_mode`: `"path"` with allowed values:
     - `"path"`
     - `"inline"`
@@ -151,7 +155,7 @@ Prompt-adjustment extension rule:
 - Persist adaptive prompt toggles in `runs.config_json` and apply run-specific hint layering at worker execution time.
 - Do not encode prompt-adaptation state in task rows; queue shape should stay stable.
 
-## Workspace override and cd-mode rules
+## Workspace override, execution-context, and cd-mode rules
 
 `--workspace-root` is treated as an explicit override, not a fallback default.
 
@@ -167,6 +171,12 @@ Final Codex `--cd` resolution:
 - Else if `codex_cd_mode == input_dir`: use run-level input directory.
 - Else (`input_file_dir`): use the task input file parent.
 
+Execution-context override:
+
+- When `codex_execution_context == "project"`, the rules above determine the actual subprocess `--cd`.
+- When `codex_execution_context == "scratch"`, the rules above only compute the project-style base directory recorded in metadata; runtime execution uses a sterile scratch directory under `<data_dir>/execution_contexts/` as the real subprocess `--cd`.
+- `workspace_root` still affects that project-style base directory, but it does not bypass scratch isolation.
+
 Special case in `one` command:
 
 - There is no run-level input root, so `input_dir` and `input_file_dir` both resolve to the input file parent.
@@ -181,10 +191,15 @@ When runs are created (`run create`, `process`, `go`), config JSON always stores
 
 And stores `workspace_root` only when explicitly provided.
 
+When resolved, run config may also store:
+
+- `codex_home_path` (absolute path chosen from `--codex-home` or `CODEX_FARM_CODEX_HOME_<PROFILE>`)
+
 Workers later prefer persisted config over worker CLI defaults:
 
 - persisted `farm_root` wins
 - persisted `workspace_root` wins when present
+- persisted `codex_home_path` wins for real execution and scoped prechecks
 - persisted `codex_model` / `codex_reasoning_effort` win when present
 - persisted `output_schema_path_override` wins when present
 - persisted `frozen_assets` (when present) tells workers to use frozen prompt/schema/pipeline files from `<data_dir>/run_assets/<run_id>/` instead of reopening live pack files

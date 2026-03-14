@@ -73,6 +73,11 @@ These helpers shape behavior across multiple commands:
 - returns `None` if not provided.
 - otherwise requires an existing directory; else raises `typer.BadParameter`.
 
+- `_resolve_codex_home_override_or_die(codex_home)` / `_resolve_codex_home_path(...)`
+- `--codex-home` is accepted by `one`, `run create`, `process`, and `go`.
+- explicit `--codex-home` wins; otherwise CLI resolves `CODEX_FARM_CODEX_HOME_<PROFILE>` from the pipeline `codex_home_profile`.
+- run-based commands persist the resolved absolute value in `runs.config_json.codex_home_path`.
+
 - `_resolve_model_override_or_die(model)`
 - returns `None` if not provided.
 - otherwise trims and validates non-empty override text; raises `typer.BadParameter` on empty input.
@@ -81,11 +86,11 @@ These helpers shape behavior across multiple commands:
 - accepts normalized Codex effort values: `none|minimal|low|medium|high|xhigh`.
 - supports CLI aliases: `--effort`, `--reasoning-effort`, `--thinking-effort`, `--codex-reasoning-effort`, `--codex-thinking-effort`.
 
-- `_ensure_codex_login_precheck_or_die(command_name, enabled, model, reasoning_effort)`
+- `_ensure_codex_login_precheck_or_die(command_name, enabled, model, reasoning_effort, env_overrides)`
 - skips when disabled or `CODEX_FARM_SKIP_LOGIN_PRECHECK` is truthy.
 - otherwise runs `run_codex_execution_checks(...)`.
-- `one`, `process`, and `go` pass the same resolved model/effort they will execute with, so the smoke check does not silently fall back to the default model.
-- `worker` has no single run-config model up front, so its precheck stays generic.
+- `one`, `process`, and `go` pass the same resolved model/effort and resolved `CODEX_HOME` they will execute with, so the smoke check does not silently fall back to the default session.
+- unscoped `worker` still prechecks generically; `worker --run-id` opens the run first and prechecks the persisted `codex_home_path`.
 
 - `_resolve_one_cd_dir(...)`
 - for `one`, `--workspace-root` wins.
@@ -93,10 +98,12 @@ These helpers shape behavior across multiple commands:
 - `codex_cd_mode=asset_root` -> farm root.
 - `codex_cd_mode=input_dir|input_file_dir` -> input file parent.
 - requires computed directory to exist.
+- if the selected pipeline has `codex_execution_context="scratch"`, this result is only the project-style base directory; the actual subprocess `--cd` becomes a scratch directory under `<data_dir>/execution_contexts/`.
 
 - `_init_data_dir(data_dir)`
 - creates `data_dir`, `inbox/`, `outbox/`.
 - creates `run_assets/` for per-run frozen execution snapshots.
+- scratch execution contexts are created later under `<data_dir>/execution_contexts/` when needed.
 - opens DB at `<data_dir>/codex_farm.sqlite3` and runs `init_db(...)`.
 
 - `_create_run_for_paths(...)`
@@ -358,6 +365,7 @@ Behavior:
 - Optional `--incremental-from <run_id>` forces one source run and fails if it is missing, non-terminal, or incompatible.
 - Persists run config JSON with absolute paths and `farm_root`.
 - Adds `workspace_root` only when user passed `--workspace-root`.
+- Adds `codex_home_path` when CLI resolved one from `--codex-home` or `CODEX_FARM_CODEX_HOME_<PROFILE>`.
 - Adds `codex_model` only when user passed `--model`.
 - Adds `codex_reasoning_effort` only when user passed an effort override.
 - Adds `output_schema_path_override` only when user passed `--output-schema`.
@@ -382,6 +390,8 @@ Output:
   "total": 1,
   "farm_root": "absolute path",
   "workspace_root": "absolute path or null",
+  "codex_execution_context": "project|scratch",
+  "codex_home_path": "absolute path or null",
   "codex_model": "resolved model string",
   "codex_reasoning_effort": "resolved effort string or null",
   "output_schema_path": "resolved schema path",
@@ -586,6 +596,7 @@ Behavior:
 
 - Optional `--root` is validated only when passed.
 - Runs execution precheck by default (`codex login status` plus a non-interactive `codex exec` smoke check) before leasing tasks; bypass with `--no-login-precheck` or `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
+- `worker --run-id <id>` reads that run first and prechecks its persisted `codex_home_path`; unscoped worker precheck stays generic.
 - If `--worker-id` not provided, generates `worker-<8 hex chars>`.
 - Calls `worker_loop(...)` and exits with that exact code.
 
@@ -602,10 +613,12 @@ Purpose:
 Behavior:
 
 - Resolves root, workspace override, optional model override, optional effort override, and pipeline.
+- Resolves optional `--codex-home` override or profile-derived `CODEX_FARM_CODEX_HOME_<PROFILE>`.
 - Resolves optional output-schema override (`--output-schema`).
 - Resolves optional recipeimport benchmark mode (`--recipeimport-benchmark-mode line_label_v1`) and debug capture toggle (`--recipeimport-benchmark-debug`).
 - When benchmark mode is enabled, process dispatches to pipeline `recipeimport.benchmark.line_label.v1`.
 - Runs execution precheck by default (`codex login status` plus a non-interactive `codex exec` smoke check) before run creation; bypass with `--no-login-precheck` or `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
+- The precheck receives the same resolved `CODEX_HOME` override the real run will use.
 - Optional `--incremental` enables planning-time reuse from the latest compatible prior run.
 - Optional `--incremental-from <run_id>` forces one source run and fails on incompatibility.
 - Glob selection rule:
@@ -653,6 +666,8 @@ Output contract:
   "output_dir": "absolute path",
   "farm_root": "absolute path",
   "workspace_root": "absolute path or null",
+  "codex_execution_context": "project|scratch",
+  "codex_home_path": "absolute path or null",
   "codex_model": "resolved model string",
   "codex_reasoning_effort": "resolved effort string or null",
   "output_schema_path": "resolved schema path",

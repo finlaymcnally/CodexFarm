@@ -661,6 +661,57 @@ def test_run_codex_exec_passes_reasoning_effort_config(
     assert 'model_reasoning_effort="high"' in captured_cmd
 
 
+def test_run_codex_exec_passes_env_overrides_and_logs_context(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "out.json"
+    schema_path = tmp_path / "schema.json"
+    log_path = tmp_path / "codex_exec_activity.csv"
+    trace_path = tmp_path / "trace.json"
+    schema_path.write_text("{}", encoding="utf-8")
+
+    captured_env: dict[str, str] | None = None
+
+    def fake_run(cmd, **kwargs):
+        nonlocal captured_env
+        captured_env = kwargs.get("env")
+        temp_output = Path(cmd[cmd.index("--output-last-message") + 1])
+        temp_output.write_text('{"ok":"OK"}', encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_codex_exec(
+        cd_dir=tmp_path,
+        prompt="Return JSON.",
+        model="gpt-5.3-codex-spark",
+        sandbox="read-only",
+        ask_for_approval="never",
+        web_search="disabled",
+        output_schema=schema_path,
+        output_path=output_path,
+        timeout_seconds=30,
+        env_overrides={"CODEX_HOME": "/tmp/codex-home"},
+        usage_log_csv=log_path,
+        usage_context={
+            "execution_context": "scratch",
+            "codex_home_path": "/tmp/codex-home",
+        },
+        trace_output_path=trace_path,
+    )
+
+    assert result.ok is True
+    assert captured_env is not None
+    assert captured_env["CODEX_HOME"] == "/tmp/codex-home"
+    rows = _read_rows(log_path)
+    assert rows[0]["execution_context"] == "scratch"
+    assert rows[0]["codex_home_path"] == "/tmp/codex-home"
+    trace_payload = json.loads(trace_path.read_text(encoding="utf-8"))
+    assert trace_payload["execution_context"] == "scratch"
+    assert trace_payload["codex_home_path"] == "/tmp/codex-home"
+
+
 def test_extract_retry_after_seconds_parses_seconds_hint() -> None:
     assert extract_retry_after_seconds("HTTP 429 retry after 12 seconds") == 12
 

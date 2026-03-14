@@ -40,6 +40,7 @@ Input to this chunk:
 
 - A rendered prompt string.
 - Runtime settings (`model`, `sandbox`, `ask_for_approval`, `web_search`, `reasoning_effort`, timeout) resolved by caller.
+- Optional subprocess env overrides resolved by caller (currently used for `CODEX_HOME` isolation).
 - Model is pipeline default unless caller applies a run/command override.
 - Reasoning effort is pipeline default unless caller applies a run/command override.
 - Resolved paths (`cd_dir`, `output_schema`, `output_path`).
@@ -80,11 +81,12 @@ Important details:
 
 - `--ask-for-approval` is passed as a global Codex flag before `exec`.
 - `--skip-git-repo-check` is always enabled to support non-git working dirs.
+- callers may inject `env_overrides`; recipe isolation uses this for `CODEX_HOME`.
 - Output is directed to a temp file in the final output directory.
 - On accepted output, `os.replace(temp, final)` gives atomic replace semantics.
 - Both stderr and stdout passthrough tails (up to 20 lines each) are returned to callers for failure diagnostics.
-- A usage CSV row is appended per Codex call (`codex_exec_activity.csv`) with timing, token usage (from `turn.completed.usage`), prompt text, exit data, and optional run/task context.
-- Callers can pass `trace_output_path` so each invocation writes a JSON trace artifact with raw Codex JSON events, passthrough lines, and action/reasoning event slices.
+- A usage CSV row is appended per Codex call (`codex_exec_activity.csv`) with timing, token usage (from `turn.completed.usage`), prompt text, exit data, optional run/task context, and additive `execution_context` / `codex_home_path` fields.
+- Callers can pass `trace_output_path` so each invocation writes a JSON trace artifact with raw Codex JSON events, passthrough lines, action/reasoning event slices, and execution-context metadata.
 - Trace classification is intentionally value-aware: modern `codex exec --json` often wraps reasoning inside `{"type":"item.completed","item":{"type":"reasoning",...}}`, so nested string values and `item.type` must count during reasoning/action slicing.
 - Telemetry rows also include parsed event types/counts, output payload fingerprint/preview, normalized failure categories, and structured pass-forward context (retry error carry-forward and applied Heads Up tips) for caller-side prompt tuning.
 
@@ -140,8 +142,9 @@ Checks:
 
 Precheck model/effort source:
 
-- `doctor` and `worker` use the generic default smoke model because they are not tied to one resolved run config.
-- `one`, `process`, and `go` pass their already-resolved execution model and reasoning effort into the smoke call, so preflight failures reflect the same Codex settings that real execution will use.
+- `doctor` and unscoped `worker` use the generic default smoke model because they are not tied to one resolved run config.
+- `one`, `process`, and `go` pass their already-resolved execution model, reasoning effort, and `CODEX_HOME` override into the smoke call, so preflight failures reflect the same Codex settings that real execution will use.
+- `worker --run-id <id>` reads that run first and prechecks the persisted `codex_home_path` before leasing.
 
 Smoke success rule is intentionally tolerant:
 

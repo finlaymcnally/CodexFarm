@@ -121,6 +121,8 @@ def build_execution_fingerprint(
             "ask_for_approval": pipeline.codex_ask_for_approval,
             "web_search": pipeline.codex_web_search,
             "cd_mode": pipeline.codex_cd_mode,
+            "execution_context": pipeline.codex_execution_context,
+            "home_profile": pipeline.codex_home_profile,
             "output_ext": pipeline.output_ext,
         },
         "paths": {

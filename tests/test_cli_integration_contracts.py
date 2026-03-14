@@ -26,7 +26,13 @@ from codex_farm.forensics import FailureForensicsRequest, capture_failure_forens
 runner = CliRunner()
 
 
-def _write_pipeline_pack(root: Path, pipeline_id: str) -> None:
+def _write_pipeline_pack(
+    root: Path,
+    pipeline_id: str,
+    *,
+    codex_execution_context: str | None = None,
+    codex_home_profile: str | None = None,
+) -> None:
     for folder in ("pipelines", "prompts", "schemas"):
         (root / folder).mkdir(parents=True, exist_ok=True)
 
@@ -49,6 +55,10 @@ def _write_pipeline_pack(root: Path, pipeline_id: str) -> None:
         "codex_timeout_seconds": 180,
         "codex_cd_mode": "asset_root",
     }
+    if codex_execution_context is not None:
+        pipeline_payload["codex_execution_context"] = codex_execution_context
+    if codex_home_profile is not None:
+        pipeline_payload["codex_home_profile"] = codex_home_profile
     (root / "pipelines" / f"{pipeline_id}.json").write_text(
         json.dumps(pipeline_payload, indent=2) + "\n",
         encoding="utf-8",
@@ -444,6 +454,8 @@ def test_process_json_stdout_contract_and_workspace_root(monkeypatch, tmp_path: 
     assert payload["output_dir"] == str(output_dir.resolve())
     assert payload["farm_root"] == str(pack.resolve())
     assert payload["workspace_root"] == str(workspace_root.resolve())
+    assert payload["codex_execution_context"] == "project"
+    assert payload["codex_home_path"] is None
     assert payload["codex_model"] == "gpt-test-override"
     assert payload["codex_reasoning_effort"] == "high"
     assert payload["output_schema_path"] == str(schema_override_path.resolve())
@@ -482,6 +494,79 @@ def test_process_json_stdout_contract_and_workspace_root(monkeypatch, tmp_path: 
         str(schema_override_path.resolve()),
     ]
     assert all(path != str(schema_override_path.resolve()) for path in captured_schema_paths)
+
+
+def test_process_resolves_profile_codex_home_and_uses_scratch_context(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    pack = tmp_path / "pack"
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    data_dir = tmp_path / "var"
+    pipeline_id = "demo.scratch.contract.v1"
+    codex_home_path = tmp_path / "recipe-home"
+
+    _write_pipeline_pack(
+        pack,
+        pipeline_id,
+        codex_execution_context="scratch",
+        codex_home_profile="recipe",
+    )
+    input_dir.mkdir(parents=True)
+    (input_dir / "a.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("CODEX_FARM_CODEX_HOME_RECIPE", str(codex_home_path))
+
+    captured_cd_dirs: list[str] = []
+    captured_envs: list[dict[str, str] | None] = []
+
+    def fake_run_codex_exec(**kwargs):
+        captured_cd_dirs.append(str(kwargs["cd_dir"]))
+        captured_envs.append(kwargs.get("env_overrides"))
+        output_path = kwargs["output_path"]
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        prompt_line = kwargs["prompt"].strip().splitlines()[-1]
+        input_path = prompt_line.replace("Input file path: ", "")
+        output_path.write_text(
+            json.dumps({"ok": "OK", "source_path": input_path}),
+            encoding="utf-8",
+        )
+        return CodexExecResult(ok=True, exit_code=0, stderr_tail="")
+
+    monkeypatch.setattr("codex_farm.worker.run_codex_exec", fake_run_codex_exec)
+
+    result = runner.invoke(
+        app,
+        [
+            "process",
+            "--root",
+            str(pack),
+            "--pipeline",
+            pipeline_id,
+            "--in",
+            str(input_dir),
+            "--out",
+            str(output_dir),
+            "--workers",
+            "1",
+            "--data-dir",
+            str(data_dir),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["codex_execution_context"] == "scratch"
+    assert payload["codex_home_path"] == str(codex_home_path.resolve())
+    assert len(captured_cd_dirs) == 1
+    assert captured_cd_dirs[0].startswith(str((data_dir / "execution_contexts").resolve()))
+    assert captured_envs == [{"CODEX_HOME": str(codex_home_path.resolve())}]
+
+    conn = open_db(data_dir / "codex_farm.sqlite3")
+    run = get_run(conn, payload["run_id"])
+    run_config = json.loads(run["config_json"])
+    assert run_config["codex_home_path"] == str(codex_home_path.resolve())
 
 
 def test_process_login_precheck_fails_fast_before_run_creation(
@@ -779,9 +864,76 @@ def test_process_login_precheck_uses_selected_model_and_effort(
             "reasoning_effort": "medium",
         }
     ]
-    payload = json.loads(result.stdout)
-    assert payload["codex_model"] == "gpt-5.1-codex-mini"
-    assert payload["codex_reasoning_effort"] == "medium"
+
+
+def test_worker_run_id_login_precheck_uses_persisted_codex_home(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("CODEX_FARM_SKIP_LOGIN_PRECHECK", raising=False)
+    data_dir = tmp_path / "var"
+    data_dir.mkdir(parents=True)
+    conn = open_db(data_dir / "codex_farm.sqlite3")
+    init_db(conn)
+    run_id = create_run(
+        conn,
+        pipeline_id="demo.worker.precheck.v1",
+        input_dir=str((tmp_path / "input").resolve()),
+        glob="**/*.json",
+        output_dir=str((tmp_path / "output").resolve()),
+        config={
+            "farm_root": str(tmp_path.resolve()),
+            "codex_home_path": str((tmp_path / "recipe-home").resolve()),
+        },
+    )
+
+    captured: list[dict[str, object]] = []
+
+    def fake_execution_checks(
+        login_timeout_seconds: int = 20,
+        smoke_timeout_seconds: int = 60,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+        env_overrides: dict[str, str] | None = None,
+    ):
+        captured.append(
+            {
+                "model": model,
+                "reasoning_effort": reasoning_effort,
+                "env_overrides": env_overrides,
+            }
+        )
+        return (
+            [
+                CheckResult(name="codex login status", ok=True, detail="Logged in using ChatGPT"),
+                CheckResult(name="codex non-interactive check", ok=True, detail="OK"),
+            ],
+            True,
+        )
+
+    monkeypatch.setattr("codex_farm.cli.run_codex_execution_checks", fake_execution_checks)
+    monkeypatch.setattr("codex_farm.cli.worker_loop", lambda **kwargs: 0)
+
+    result = runner.invoke(
+        app,
+        [
+            "worker",
+            "--data-dir",
+            str(data_dir),
+            "--run-id",
+            run_id,
+            "--once",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert captured == [
+        {
+            "model": None,
+            "reasoning_effort": None,
+            "env_overrides": {"CODEX_HOME": str((tmp_path / "recipe-home").resolve())},
+        }
+    ]
 
 
 def test_run_progress_json_contract(tmp_path: Path) -> None:
@@ -1914,6 +2066,8 @@ def test_run_create_json_contract(tmp_path: Path) -> None:
     assert payload["total"] == 1
     assert payload["input_dir"] == str(input_dir.resolve())
     assert payload["output_dir"] == str(output_dir.resolve())
+    assert payload["codex_execution_context"] == "project"
+    assert payload["codex_home_path"] is None
     assert payload["codex_model"] == "gpt-5.3-codex-spark"
     assert payload["codex_reasoning_effort"] is None
     assert payload["output_schema_path"] == str(

@@ -7,6 +7,7 @@ from dataclasses import replace
 import json
 import os
 import re
+import shutil
 import threading
 import time
 import tempfile
@@ -36,6 +37,7 @@ from .db import (
     run_status,
     upsert_run_throttle_state,
 )
+from .execution_context import prepare_execution_context
 from .forensics import FailureForensicsRequest, capture_failure_forensics
 from .heads_up import (
     DEFAULT_HEADS_UP_MAX_TIPS,
@@ -634,10 +636,12 @@ def worker_loop(
         codex_web_search: str
         codex_timeout_seconds: int
         codex_cd_mode: str
+        codex_execution_context: str
         selected_model: str
         selected_effort: str | None
         selected_output_schema: Path
         selected_output_schema_logical: Path
+        selected_codex_home = _path_from_config(run_config.get("codex_home_path"))
         prepared_benchmark_artifacts: PreparedLineLabelBenchmarkArtifacts | None = None
         has_frozen_assets = "frozen_assets" in run_config
         frozen_assets_config = run_config.get("frozen_assets")
@@ -754,6 +758,7 @@ def worker_loop(
             codex_web_search = frozen_spec.codex_web_search
             codex_timeout_seconds = frozen_spec.codex_timeout_seconds
             codex_cd_mode = frozen_spec.codex_cd_mode
+            codex_execution_context = frozen_spec.codex_execution_context
             selected_model = frozen_spec.codex_model
             selected_effort = frozen_spec.codex_reasoning_effort
             selected_output_schema = frozen_spec.output_schema_path
@@ -813,6 +818,7 @@ def worker_loop(
                 codex_web_search = spec.codex_web_search
                 codex_timeout_seconds = spec.codex_timeout_seconds
                 codex_cd_mode = spec.codex_cd_mode
+                codex_execution_context = spec.codex_execution_context
             except (FileNotFoundError, ValueError) as exc:
                 error_full = str(exc)
                 error_summary = _trim_error(error_full)
@@ -915,7 +921,11 @@ def worker_loop(
                 runtime_context={
                     "branch": "cd_dir_resolution",
                     "codex_cd_mode": codex_cd_mode,
+                    "codex_execution_context": codex_execution_context,
                     "run_farm_root": str(run_farm_root),
+                    "codex_home_path": (
+                        str(selected_codex_home) if selected_codex_home is not None else None
+                    ),
                 },
             )
             transitioned = mark_task_error(
@@ -963,8 +973,19 @@ def worker_loop(
         codex_stderr_tail: str | None = None
         codex_exit_code: int | None = None
         raw_benchmark_output_text: str | None = None
+        prepared_execution = None
 
         try:
+            prepared_execution = prepare_execution_context(
+                execution_context=codex_execution_context,
+                project_cd_dir=cd_dir,
+                data_dir=data_dir,
+                source="worker",
+                codex_home_path=selected_codex_home,
+                run_id=str(task["run_id"]),
+                task_id=str(task["task_id"]),
+                lease_token=task_lease_token,
+            )
             usage_context = {
                 "source": "worker",
                 "pipeline_id": pipeline_id,
@@ -983,10 +1004,14 @@ def worker_loop(
                 "attempt_index": lease_claim_index,
                 "lease_claim_index": lease_claim_index,
                 "execution_attempt_index": execution_attempt_index,
+                "execution_context": codex_execution_context,
+                "codex_home_path": (
+                    str(selected_codex_home) if selected_codex_home is not None else None
+                ),
                 **retry_meta,
             }
             result = run_codex_exec(
-                cd_dir=cd_dir,
+                cd_dir=prepared_execution.cd_dir,
                 prompt=prompt,
                 model=selected_model,
                 sandbox=codex_sandbox,
@@ -997,6 +1022,7 @@ def worker_loop(
                 output_schema_logical_path=selected_output_schema_logical,
                 output_path=staged_output_path,
                 timeout_seconds=codex_timeout_seconds,
+                env_overrides=prepared_execution.env_overrides,
                 usage_log_csv=usage_log_csv,
                 usage_context=usage_context,
                 trace_output_path=trace_output_path,
@@ -1261,9 +1287,16 @@ def worker_loop(
                     "codex_model": selected_model,
                     "codex_reasoning_effort": selected_effort,
                     "codex_cd_mode": codex_cd_mode,
+                    "codex_execution_context": codex_execution_context,
                     "recipeimport_benchmark_mode": recipeimport_benchmark_mode,
                     "recipeimport_benchmark_debug": recipeimport_benchmark_debug,
-                    "cd_dir": str(cd_dir),
+                    "project_cd_dir": str(cd_dir),
+                    "cd_dir": str(
+                        prepared_execution.cd_dir if prepared_execution is not None else cd_dir
+                    ),
+                    "codex_home_path": (
+                        str(selected_codex_home) if selected_codex_home is not None else None
+                    ),
                     "retry_after_seconds": exc.retry_after_seconds,
                     "cooldown_seconds": throttle_after.last_cooldown_seconds,
                     "concurrency_limit": throttle_after.concurrency_limit,
@@ -1272,6 +1305,11 @@ def worker_loop(
                     "lease_claim_index": lease_claim_index,
                     "execution_attempt_index": execution_attempt_index,
                     "effective_execution_attempt_index": effective_execution_attempt_index,
+                    **(
+                        prepared_execution.metadata
+                        if prepared_execution is not None
+                        else {}
+                    ),
                 },
             )
             staged_output_path.unlink(missing_ok=True)
@@ -1373,9 +1411,16 @@ def worker_loop(
                     "codex_model": selected_model,
                     "codex_reasoning_effort": selected_effort,
                     "codex_cd_mode": codex_cd_mode,
+                    "codex_execution_context": codex_execution_context,
                     "recipeimport_benchmark_mode": recipeimport_benchmark_mode,
                     "recipeimport_benchmark_debug": recipeimport_benchmark_debug,
-                    "cd_dir": str(cd_dir),
+                    "project_cd_dir": str(cd_dir),
+                    "cd_dir": str(
+                        prepared_execution.cd_dir if prepared_execution is not None else cd_dir
+                    ),
+                    "codex_home_path": (
+                        str(selected_codex_home) if selected_codex_home is not None else None
+                    ),
                     "max_attempts": max_attempts,
                     "heads_up_enabled": heads_up_enabled,
                     "heads_up_tip_count": len(applied_tip_texts),
@@ -1383,6 +1428,11 @@ def worker_loop(
                     "lease_claim_index": lease_claim_index,
                     "execution_attempt_index": execution_attempt_index,
                     "effective_execution_attempt_index": effective_execution_attempt_index,
+                    **(
+                        prepared_execution.metadata
+                        if prepared_execution is not None
+                        else {}
+                    ),
                 },
             )
             staged_output_path.unlink(missing_ok=True)
@@ -1444,11 +1494,23 @@ def worker_loop(
                     "codex_model": selected_model,
                     "codex_reasoning_effort": selected_effort,
                     "codex_cd_mode": codex_cd_mode,
-                    "cd_dir": str(cd_dir),
+                    "codex_execution_context": codex_execution_context,
+                    "project_cd_dir": str(cd_dir),
+                    "cd_dir": str(
+                        prepared_execution.cd_dir if prepared_execution is not None else cd_dir
+                    ),
+                    "codex_home_path": (
+                        str(selected_codex_home) if selected_codex_home is not None else None
+                    ),
                     "max_attempts": max_attempts,
                     "lease_claim_index": lease_claim_index,
                     "execution_attempt_index": execution_attempt_index,
                     "effective_execution_attempt_index": effective_execution_attempt_index,
+                    **(
+                        prepared_execution.metadata
+                        if prepared_execution is not None
+                        else {}
+                    ),
                 },
             )
             staged_output_path.unlink(missing_ok=True)
@@ -1488,5 +1550,8 @@ def worker_loop(
                         error=error_message,
                         lease_token=task_lease_token,
                     )
+        finally:
+            if prepared_execution is not None and prepared_execution.scratch_root is not None:
+                shutil.rmtree(prepared_execution.scratch_root, ignore_errors=True)
 
     return exit_code

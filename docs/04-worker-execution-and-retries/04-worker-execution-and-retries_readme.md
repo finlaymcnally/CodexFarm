@@ -50,7 +50,7 @@ Related boundaries:
 5. Resolve run root:
    - run config `farm_root` wins
    - otherwise fallback to worker `--root` (if provided)
-6. Resolve optional run-level `workspace_root` override (must exist as a directory).
+6. Resolve optional run-level `workspace_root` override (must exist as a directory) and optional persisted `codex_home_path`.
 7. Resolve execution contract:
    - if `runs.config_json.frozen_assets` exists, load and verify snapshot files from `<data_dir>/run_assets/<run_id>/` and use frozen settings (prompt/schema/model/effort/cd-mode/sandbox/approval/web-search/timeout)
    - otherwise load live pipeline map from resolved farm root (cached per root path) and use legacy run-config override precedence
@@ -62,16 +62,20 @@ Related boundaries:
    - `input_path` from task row
    - canonical output path `run.output_dir / task.rel_output_path`
    - staged path `run.output_dir/.codex-farm-stage/<task_id>/<lease_token><ext>`
-11. Resolve task `cd_dir`:
+11. Resolve project-style task `cd_dir`:
    - explicit run `workspace_root` override
    - else pipeline `codex_cd_mode` (`asset_root` / `input_dir` / `input_file_dir`)
-12. Render prompt template and optionally append matching Heads Up tips.
-13. Start heartbeat for the claimed lease (separate DB connection), then increment `execution_attempts` immediately before each real Codex start.
-14. Execute Codex and validate staged output JSON against the resolved schema path.
-15. Promote staged output to canonical output only inside an owner-checked transaction (`task_id + lease_token`).
-16. On failure, capture failure forensics (best-effort) before staged-output cleanup.
-17. Mark task `done`, or requeue/error on failure.
-18. If Heads Up tips were applied and task reached terminal outcome (`done|error`), record usage to update tip scoring.
+12. Prepare the effective execution context:
+   - `codex_execution_context=project` keeps that `cd_dir`
+   - `codex_execution_context=scratch` creates a per-attempt directory under `<data_dir>/execution_contexts/`
+   - `runs.config_json.codex_home_path` becomes `CODEX_HOME` in subprocess env overrides when present
+13. Render prompt template and optionally append matching Heads Up tips.
+14. Start heartbeat for the claimed lease (separate DB connection), then increment `execution_attempts` immediately before each real Codex start.
+15. Execute Codex and validate staged output JSON against the resolved schema path.
+16. Promote staged output to canonical output only inside an owner-checked transaction (`task_id + lease_token`).
+17. On failure, capture failure forensics (best-effort) before staged-output cleanup.
+18. Mark task `done`, or requeue/error on failure.
+19. If Heads Up tips were applied and task reached terminal outcome (`done|error`), record usage to update tip scoring.
 
 ## Lease Claiming Contract (Critical Concurrency Logic)
 
@@ -166,8 +170,10 @@ Worker `cd_dir` decision in `_resolve_task_cd_dir(...)`:
    - `asset_root` -> resolved farm root
    - `input_dir` -> run input root (`run["input_dir"]`)
    - `input_file_dir` -> task input file parent
+3. If `codex_execution_context == "scratch"`, worker creates a per-attempt scratch directory under `<data_dir>/execution_contexts/<run_id>/<task_id>/<lease_token>/` and passes that as the real subprocess `--cd`.
+4. If `runs.config_json.codex_home_path` exists, worker also passes `CODEX_HOME=<path>` into the subprocess environment.
 
-If computed `cd_dir` does not exist, task is terminal `error` (no retry).
+If computed project `cd_dir` does not exist, task is terminal `error` (no retry).
 
 ## Worker Exit Code Semantics
 

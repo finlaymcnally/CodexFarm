@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 
 CodexCdMode = Literal["asset_root", "input_dir", "input_file_dir"]
+CodexExecutionContext = Literal["project", "scratch"]
 CodexReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh"]
 PromptInputMode = Literal["path", "inline"]
 
@@ -30,6 +31,8 @@ class PipelineSpec:
     codex_reasoning_effort: CodexReasoningEffort | None
     codex_timeout_seconds: int
     codex_cd_mode: CodexCdMode
+    codex_execution_context: CodexExecutionContext
+    codex_home_profile: str | None
     prompt_input_mode: PromptInputMode
 
 
@@ -51,6 +54,8 @@ class PipelineSpecModel(BaseModel):
     codex_reasoning_effort: CodexReasoningEffort | None = None
     codex_timeout_seconds: int = Field(default=180, ge=1)
     codex_cd_mode: CodexCdMode = "asset_root"
+    codex_execution_context: CodexExecutionContext = "project"
+    codex_home_profile: str | None = None
     prompt_input_mode: PromptInputMode = "path"
 
     @field_validator("output_ext")
@@ -108,6 +113,8 @@ def _to_spec(
         codex_reasoning_effort=model.codex_reasoning_effort,
         codex_timeout_seconds=model.codex_timeout_seconds,
         codex_cd_mode=model.codex_cd_mode,
+        codex_execution_context=model.codex_execution_context,
+        codex_home_profile=model.codex_home_profile,
         prompt_input_mode=model.prompt_input_mode,
     )
 

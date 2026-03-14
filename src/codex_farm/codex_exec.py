@@ -136,6 +136,8 @@ _USAGE_LOG_FIELDS = (
     "web_search",
     "reasoning_effort",
     "cd_dir",
+    "execution_context",
+    "codex_home_path",
     "output_schema_path",
     "output_path",
     "output_payload_present",
@@ -415,6 +417,7 @@ def _persist_trace_artifact(
     stderr: str,
     events: list[dict[str, object]],
     passthrough_lines: list[str],
+    env_overrides: Mapping[str, str] | None = None,
 ) -> tuple[Path | None, int | None, list[str], int | None, list[str]]:
     if trace_output_path is None:
         return None, None, [], None, []
@@ -453,6 +456,11 @@ def _persist_trace_artifact(
         "task_id": (usage_context or {}).get("task_id"),
         "worker_id": (usage_context or {}).get("worker_id"),
         "input_path": (usage_context or {}).get("input_path"),
+        "execution_context": (usage_context or {}).get("execution_context"),
+        "codex_home_path": (
+            (env_overrides or {}).get("CODEX_HOME")
+            or (usage_context or {}).get("codex_home_path")
+        ),
         "command": cmd,
         "prompt_text": prompt,
         "stdout_raw": stdout,
@@ -796,6 +804,7 @@ def _log_codex_activity(
     trace_action_types: list[str] | None,
     trace_reasoning_count: int | None,
     trace_reasoning_types: list[str] | None,
+    env_overrides: Mapping[str, str] | None = None,
 ) -> None:
     if usage_log_csv is None:
         return
@@ -871,6 +880,10 @@ def _log_codex_activity(
         "web_search": web_search,
         "reasoning_effort": reasoning_effort,
         "cd_dir": str(cd_dir.resolve()),
+        "execution_context": context.get("execution_context"),
+        "codex_home_path": (
+            (env_overrides or {}).get("CODEX_HOME") or context.get("codex_home_path")
+        ),
         "output_schema_path": str(
             (output_schema_logical_path or output_schema).expanduser().resolve()
         ),
@@ -947,6 +960,7 @@ def run_codex_exec(
     timeout_seconds: int,
     output_schema_logical_path: Path | None = None,
     reasoning_effort: str | None = None,
+    env_overrides: Mapping[str, str] | None = None,
     usage_log_csv: Path | None = None,
     usage_context: Mapping[str, object] | None = None,
     trace_output_path: Path | None = None,
@@ -1000,12 +1014,16 @@ def run_codex_exec(
     )
 
     try:
+        proc_env = os.environ.copy()
+        if env_overrides:
+            proc_env.update({key: value for key, value in env_overrides.items()})
         proc = subprocess.run(
             cmd,
             check=False,
             text=True,
             capture_output=True,
             timeout=timeout_seconds,
+            env=proc_env,
         )
     except subprocess.TimeoutExpired as exc:
         timeout_stdout = _coerce_text(exc.stdout)
@@ -1048,6 +1066,7 @@ def run_codex_exec(
             stderr=timeout_stderr,
             events=timeout_events,
             passthrough_lines=timeout_passthrough_lines,
+            env_overrides=env_overrides,
         )
         _log_codex_activity(
             usage_log_csv=usage_log_csv,
@@ -1081,6 +1100,7 @@ def run_codex_exec(
             trace_action_types=trace_action_types,
             trace_reasoning_count=trace_reasoning_count,
             trace_reasoning_types=trace_reasoning_types,
+            env_overrides=env_overrides,
         )
         raise CodexExecTimeoutError(
             f"codex exec timed out after {timeout_seconds}s",
@@ -1162,6 +1182,7 @@ def run_codex_exec(
         stderr=proc.stderr,
         events=events,
         passthrough_lines=passthrough_lines,
+        env_overrides=env_overrides,
     )
     _log_codex_activity(
         usage_log_csv=usage_log_csv,
@@ -1195,5 +1216,6 @@ def run_codex_exec(
         trace_action_types=trace_action_types,
         trace_reasoning_count=trace_reasoning_count,
         trace_reasoning_types=trace_reasoning_types,
+        env_overrides=env_overrides,
     )
     return result

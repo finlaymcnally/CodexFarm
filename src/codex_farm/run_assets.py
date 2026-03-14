@@ -46,6 +46,8 @@ class FrozenExecutionSpec:
     codex_reasoning_effort: str | None
     codex_timeout_seconds: int
     codex_cd_mode: str
+    codex_execution_context: str
+    codex_home_profile: str | None
     prompt_template_path: Path
     output_schema_path: Path
     logical_output_schema_source_path: Path
@@ -210,6 +212,8 @@ def freeze_run_assets(
             "codex_reasoning_effort": resolved_reasoning_effort,
             "codex_timeout_seconds": pipeline.codex_timeout_seconds,
             "codex_cd_mode": pipeline.codex_cd_mode,
+            "codex_execution_context": pipeline.codex_execution_context,
+            "codex_home_profile": pipeline.codex_home_profile,
             "prompt_template_relpath": files["prompt_template_relpath"],
             "output_schema_relpath": files["output_schema_relpath"],
             "logical_output_schema_source_path": str(output_schema_source_path),
@@ -377,6 +381,18 @@ def load_frozen_run_assets(
         raise FrozenRunAssetsError(
             "Frozen effective pipeline codex_reasoning_effort must be string or null"
         )
+    raw_codex_home_profile = effective_pipeline.get("codex_home_profile")
+    if raw_codex_home_profile is not None and not isinstance(raw_codex_home_profile, str):
+        raise FrozenRunAssetsError(
+            "Frozen effective pipeline codex_home_profile must be string or null"
+        )
+    raw_execution_context = (
+        _optional_string_field(effective_pipeline, "codex_execution_context") or "project"
+    )
+    if raw_execution_context not in {"project", "scratch"}:
+        raise FrozenRunAssetsError(
+            "Frozen effective pipeline codex_execution_context must be 'project' or 'scratch'"
+        )
 
     timeout_seconds = _int_field(
         effective_pipeline, "codex_timeout_seconds", where="effective_pipeline"
@@ -416,6 +432,8 @@ def load_frozen_run_assets(
         codex_reasoning_effort=raw_reasoning_effort,
         codex_timeout_seconds=timeout_seconds,
         codex_cd_mode=_string_field(effective_pipeline, "codex_cd_mode", where="effective_pipeline"),
+        codex_execution_context=raw_execution_context,
+        codex_home_profile=raw_codex_home_profile.strip() if isinstance(raw_codex_home_profile, str) else None,
         prompt_template_path=prompt_template_path,
         output_schema_path=output_schema_path,
         logical_output_schema_source_path=logical_output_schema_source_path,

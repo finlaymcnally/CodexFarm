@@ -6,10 +6,12 @@ from collections import defaultdict
 from datetime import datetime
 import json
 from pathlib import Path
+import shutil
 import sqlite3
 from typing import cast
 
 from .codex_exec import CodexExecTimeoutError, run_codex_exec
+from .execution_context import prepare_execution_context
 from .db import (
     list_task_learning_rows,
     record_heads_up_tip_usage as db_record_heads_up_tip_usage,
@@ -19,6 +21,7 @@ from .db import (
 )
 from .paths import resolve_farm_root
 from .pipeline_spec import load_pipelines
+from .run_assets import FrozenRunAssetsError, load_frozen_run_assets
 from .schema_utils import SchemaValidationError, validate_json_file_against_schema
 
 
@@ -293,6 +296,17 @@ def learn_heads_up_from_run(
     )
 
     selected_model = model_override or str(run_config.get("codex_model") or spec.codex_model)
+    selected_execution_context = spec.codex_execution_context
+    frozen_assets_config = run_config.get("frozen_assets")
+    if isinstance(frozen_assets_config, dict):
+        try:
+            _, frozen_spec = load_frozen_run_assets(
+                data_dir=data_dir,
+                frozen_assets_config=frozen_assets_config,
+            )
+            selected_execution_context = frozen_spec.codex_execution_context
+        except FrozenRunAssetsError:
+            selected_execution_context = spec.codex_execution_context
     configured_effort = run_config.get("codex_reasoning_effort")
     selected_effort: str | None = None
     if reasoning_effort_override is not None:
@@ -308,10 +322,13 @@ def learn_heads_up_from_run(
     trace_output_path = (
         data_dir.resolve() / "heads_up" / "traces" / f"learn-{run_id}-{trace_stamp}.trace.json"
     )
+    selected_codex_home = _path_from_config(run_config.get("codex_home_path"))
     usage_context = {
         "source": "heads_up.learn",
         "pipeline_id": spec.pipeline_id,
         "run_id": run_id,
+        "execution_context": selected_execution_context,
+        "codex_home_path": str(selected_codex_home) if selected_codex_home is not None else None,
         "heads_up_applied": False,
         "heads_up_tip_count": 0,
         "heads_up_tip_ids_json": "[]",
@@ -322,9 +339,18 @@ def learn_heads_up_from_run(
         "retry_previous_error": None,
     }
 
+    prepared_execution = None
     try:
+        prepared_execution = prepare_execution_context(
+            execution_context=selected_execution_context,
+            project_cd_dir=run_farm_root,
+            data_dir=data_dir,
+            source="heads_up.learn",
+            codex_home_path=selected_codex_home,
+            run_id=run_id,
+        )
         result = run_codex_exec(
-            cd_dir=run_farm_root,
+            cd_dir=prepared_execution.cd_dir,
             prompt=prompt,
             model=selected_model,
             sandbox=spec.codex_sandbox,
@@ -334,12 +360,16 @@ def learn_heads_up_from_run(
             output_schema=output_schema_path,
             output_path=learn_output_path,
             timeout_seconds=spec.codex_timeout_seconds,
+            env_overrides=prepared_execution.env_overrides,
             usage_log_csv=usage_log_csv,
             usage_context=usage_context,
             trace_output_path=trace_output_path,
         )
     except CodexExecTimeoutError as exc:
         return {"tips_added": 0, "warning": str(exc)}
+    finally:
+        if prepared_execution is not None and prepared_execution.scratch_root is not None:
+            shutil.rmtree(prepared_execution.scratch_root, ignore_errors=True)
 
     if not result.ok:
         return {

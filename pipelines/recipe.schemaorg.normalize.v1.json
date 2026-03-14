@@ -11,5 +11,7 @@
   "codex_ask_for_approval": "never",
   "codex_web_search": "disabled",
   "codex_timeout_seconds": 180,
-  "codex_cd_mode": "asset_root"
+  "codex_cd_mode": "asset_root",
+  "codex_execution_context": "scratch",
+  "codex_home_profile": "recipe"
 }

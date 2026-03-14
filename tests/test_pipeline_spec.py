@@ -15,6 +15,8 @@ def test_load_pipelines_reads_known_specs() -> None:
     assert "recipe.schemaorg.to_proprietary.v1" in pipelines
     assert "recipeimport.benchmark.line_label.v1" in pipelines
     assert pipelines["recipe.schemaorg.normalize.v1"].codex_cd_mode == "asset_root"
+    assert pipelines["recipe.schemaorg.normalize.v1"].codex_execution_context == "scratch"
+    assert pipelines["recipe.schemaorg.normalize.v1"].codex_home_profile == "recipe"
     assert pipelines["recipe.schemaorg.normalize.v1"].prompt_input_mode == "inline"
     assert pipelines["recipe.schemaorg.to_proprietary.v1"].prompt_input_mode == "inline"
     assert pipelines["recipeimport.benchmark.line_label.v1"].prompt_input_mode == "inline"
@@ -80,6 +82,75 @@ def test_load_pipelines_reads_explicit_codex_cd_mode(tmp_path: Path) -> None:
 
     loaded = load_pipelines(tmp_path / "pipelines")
     assert loaded["demo.cd.mode.v1"].codex_cd_mode == "input_file_dir"
+
+
+def test_load_pipelines_reads_execution_context_and_home_profile(tmp_path: Path) -> None:
+    for folder in ("pipelines", "prompts", "schemas"):
+        (tmp_path / folder).mkdir(parents=True, exist_ok=True)
+
+    pipeline_payload = {
+        "pipeline_id": "demo.execution.context.v1",
+        "description": "demo",
+        "prompt_template_path": "prompts/demo.txt",
+        "output_schema_path": "schemas/demo.schema.json",
+        "codex_execution_context": "scratch",
+        "codex_home_profile": "recipe-profile",
+    }
+    (tmp_path / "pipelines" / "demo.execution.context.v1.json").write_text(
+        json.dumps(pipeline_payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "prompts" / "demo.txt").write_text("INPUT={{INPUT_PATH}}\n", encoding="utf-8")
+    (tmp_path / "schemas" / "demo.schema.json").write_text(
+        json.dumps(
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "required": ["ok"],
+                "properties": {"ok": {"type": "string"}},
+                "additionalProperties": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_pipelines(tmp_path / "pipelines")
+    spec = loaded["demo.execution.context.v1"]
+    assert spec.codex_execution_context == "scratch"
+    assert spec.codex_home_profile == "recipe-profile"
+
+
+def test_load_pipelines_rejects_unknown_execution_context(tmp_path: Path) -> None:
+    for folder in ("pipelines", "prompts", "schemas"):
+        (tmp_path / folder).mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "pipeline_id": "demo.bad.execution.context.v1",
+        "description": "demo",
+        "prompt_template_path": "prompts/demo.txt",
+        "output_schema_path": "schemas/demo.schema.json",
+        "codex_execution_context": "sterile",
+    }
+    (tmp_path / "pipelines" / "demo.bad.execution.context.v1.json").write_text(
+        json.dumps(payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "prompts" / "demo.txt").write_text("INPUT={{INPUT_PATH}}\n", encoding="utf-8")
+    (tmp_path / "schemas" / "demo.schema.json").write_text(
+        json.dumps(
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "required": ["ok"],
+                "properties": {"ok": {"type": "string"}},
+                "additionalProperties": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError):
+        load_pipelines(tmp_path / "pipelines")
 
 
 def test_load_pipelines_rejects_unknown_codex_cd_mode(tmp_path: Path) -> None:

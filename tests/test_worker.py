@@ -258,7 +258,9 @@ def test_worker_loop_processes_task_with_mocked_codex(monkeypatch, tmp_path: Pat
     status = run_status(conn, run_id=run_id)
     assert status["done"] == 1
     assert status["error"] == 0
-    assert captured_cd_dirs == [str(workspace_root.resolve())]
+    assert len(captured_cd_dirs) == 1
+    assert captured_cd_dirs[0].startswith(str((data_dir / "execution_contexts").resolve()))
+    assert captured_cd_dirs[0] != str(workspace_root.resolve())
     assert captured_models == ["gpt-test-override"]
     assert captured_efforts == ["medium"]
     tasks = list_tasks_for_run(conn, run_id=run_id)

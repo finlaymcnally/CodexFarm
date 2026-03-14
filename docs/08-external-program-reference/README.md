@@ -29,6 +29,8 @@ Use this folder when another app or script drives `codex-farm` via CLI and JSON 
 - Execution overrides:
   - `--model` and effort aliases (`--effort`, `--reasoning-effort`, `--thinking-effort`, plus codex-prefixed forms) are accepted by `one`, `run create`, `process`, and `go`.
   - run-based commands persist explicit overrides so retries/resumes keep the same model/effort contract.
+  - `--codex-home` is accepted by `one`, `run create`, `process`, and `go`; run-based commands persist the resolved absolute `codex_home_path`.
+  - pipelines may also declare `codex_home_profile`, which resolves `CODEX_FARM_CODEX_HOME_<PROFILE>` during run creation.
 - Structured output:
   - `--output-schema` is supported on `one`, `run create`, `process`, and `go`.
   - run-based commands persist `output_schema_path_override` so queued worker retries use the same schema.
@@ -44,6 +46,8 @@ Use this folder when another app or script drives `codex-farm` via CLI and JSON 
   - `run tasks --json` exposes reuse provenance per task (`reused`, `reused_from_run_id`, `reused_from_task_id`).
 - Machine-safe outputs:
 - execution commands (`one`, `worker`, `process`, `go`) run execution precheck by default (`codex login status` plus a non-interactive `codex exec` smoke check).
+  - `run create --json` and `process --json` include additive `codex_execution_context` and `codex_home_path` fields.
+  - recipe-style pipelines may run from scratch `--cd` directories under `<data_dir>/execution_contexts/` even when `codex_cd_mode` or `workspace_root` would otherwise point at the pack root.
   - callers can bypass precheck intentionally with `--no-login-precheck` or env `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
   - `process --json` keeps stdout parseable (single JSON payload).
   - `process --progress-events` adds machine-readable stderr event lines prefixed with `__codex_farm_progress__ `.

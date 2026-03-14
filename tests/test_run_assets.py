@@ -31,6 +31,8 @@ def _write_pack(root: Path, pipeline_id: str) -> None:
         "codex_web_search": "disabled",
         "codex_timeout_seconds": 180,
         "codex_cd_mode": "asset_root",
+        "codex_execution_context": "scratch",
+        "codex_home_profile": "recipe",
     }
     (root / "pipelines" / f"{pipeline_id}.json").write_text(
         json.dumps(pipeline_payload, indent=2) + "\n",
@@ -93,6 +95,8 @@ def test_freeze_run_assets_round_trip(tmp_path: Path) -> None:
     assert execution.pipeline_id == pipeline_id
     assert execution.codex_model == "gpt-model-override"
     assert execution.codex_reasoning_effort == "high"
+    assert execution.codex_execution_context == "scratch"
+    assert execution.codex_home_profile == "recipe"
     assert execution.prompt_template_path == manifest.prompt_template_path
     assert execution.output_schema_path == manifest.output_schema_path
     assert execution.logical_output_schema_source_path == pipeline.output_schema_path.resolve()
@@ -100,6 +104,8 @@ def test_freeze_run_assets_round_trip(tmp_path: Path) -> None:
     effective_payload = json.loads(manifest.effective_pipeline_path.read_text(encoding="utf-8"))
     assert effective_payload["codex_model"] == "gpt-model-override"
     assert effective_payload["codex_reasoning_effort"] == "high"
+    assert effective_payload["codex_execution_context"] == "scratch"
+    assert effective_payload["codex_home_profile"] == "recipe"
     assert effective_payload["prompt_template_relpath"] == "prompt.template.txt"
     assert effective_payload["output_schema_relpath"] == "output.schema.json"
 

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 import shutil
 import subprocess
 import sys
+from typing import Mapping
 
 from .codex_exec import is_auth_failure_message
 from .model_catalog import DEFAULT_CODEX_MODEL
@@ -18,13 +20,22 @@ class CheckResult:
     detail: str
 
 
-def _run_command(cmd: list[str], timeout_seconds: int = 20) -> subprocess.CompletedProcess[str]:
+def _run_command(
+    cmd: list[str],
+    timeout_seconds: int = 20,
+    *,
+    env_overrides: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = None
+    if env_overrides:
+        env = {**os.environ, **dict(env_overrides)}
     return subprocess.run(
         cmd,
         check=False,
         text=True,
         capture_output=True,
         timeout=timeout_seconds,
+        env=env,
     )
 
 
@@ -70,6 +81,7 @@ def check_codex_non_interactive_status(
     *,
     model: str | None = None,
     reasoning_effort: str | None = None,
+    env_overrides: Mapping[str, str] | None = None,
 ) -> CheckResult:
     codex_path = shutil.which("codex")
     if codex_path is None:
@@ -98,7 +110,10 @@ def check_codex_non_interactive_status(
             f'model_reasoning_effort="{reasoning_effort}"',
         ]
     try:
-        smoke_proc = _run_command(smoke_cmd, timeout_seconds=timeout_seconds)
+        run_kwargs = {"timeout_seconds": timeout_seconds}
+        if env_overrides is not None:
+            run_kwargs["env_overrides"] = env_overrides
+        smoke_proc = _run_command(smoke_cmd, **run_kwargs)
     except subprocess.TimeoutExpired:
         return CheckResult(
             name="codex non-interactive check",
@@ -138,6 +153,7 @@ def run_codex_execution_checks(
     smoke_timeout_seconds: int = 60,
     model: str | None = None,
     reasoning_effort: str | None = None,
+    env_overrides: Mapping[str, str] | None = None,
 ) -> tuple[list[CheckResult], bool]:
     login_check = check_codex_login_status(timeout_seconds=login_timeout_seconds)
     checks = [login_check]
@@ -155,6 +171,7 @@ def run_codex_execution_checks(
         timeout_seconds=smoke_timeout_seconds,
         model=model,
         reasoning_effort=reasoning_effort,
+        env_overrides=env_overrides,
     )
     checks.append(smoke_check)
     return checks, all(check.ok for check in checks)

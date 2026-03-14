@@ -118,6 +118,29 @@ def test_check_codex_non_interactive_status_uses_requested_model_and_effort(monk
     ]
 
 
+def test_check_codex_non_interactive_status_passes_env_overrides(monkeypatch) -> None:
+    monkeypatch.setattr("codex_farm.doctor.shutil.which", lambda name: "/usr/bin/codex")
+    captured_envs: list[dict[str, str] | None] = []
+
+    def fake_run_command(
+        cmd: list[str],
+        timeout_seconds: int = 60,
+        *,
+        env_overrides=None,
+    ):
+        captured_envs.append(env_overrides)
+        return _completed(cmd, returncode=0, stdout="OK\n")
+
+    monkeypatch.setattr("codex_farm.doctor._run_command", fake_run_command)
+
+    check = check_codex_non_interactive_status(
+        env_overrides={"CODEX_HOME": "/tmp/codex-home"},
+    )
+
+    assert check.ok is True
+    assert captured_envs == [{"CODEX_HOME": "/tmp/codex-home"}]
+
+
 def test_run_codex_execution_checks_require_smoke_even_when_login_status_passes(monkeypatch) -> None:
     monkeypatch.setattr("codex_farm.doctor.shutil.which", lambda name: "/usr/bin/codex")
 

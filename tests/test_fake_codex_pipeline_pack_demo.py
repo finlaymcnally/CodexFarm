@@ -47,6 +47,50 @@ with open(output_path, "w", encoding="utf-8") as handle:
     script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR)
 
 
+def _write_fake_codex_with_env(bin_dir: Path) -> None:
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    script_path = bin_dir / "codex"
+    script_path.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+
+
+def _value(args, flag):
+    for idx, arg in enumerate(args):
+        if arg == flag and idx + 1 < len(args):
+            return args[idx + 1]
+    return ""
+
+
+args = sys.argv[1:]
+output_path = _value(args, "--output-last-message")
+cd_dir = _value(args, "--cd")
+prompt = args[-1] if args else ""
+input_path = ""
+
+for line in prompt.splitlines():
+    if line.startswith("INPUT="):
+        input_path = line.split("=", 1)[1].strip()
+        break
+
+with open(output_path, "w", encoding="utf-8") as handle:
+    json.dump(
+        {
+            "ok": "OK",
+            "cd": cd_dir,
+            "input_path": input_path,
+            "codex_home": os.environ.get("CODEX_HOME", ""),
+        },
+        handle,
+    )
+""",
+        encoding="utf-8",
+    )
+    script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR)
+
+
 def _env_with_fake_codex(bin_dir: Path) -> dict[str, str]:
     return {
         "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
@@ -169,6 +213,55 @@ def _write_drift_pack(pack_root: Path, pipeline_id: str) -> None:
     )
 
 
+def _write_scratch_pack(pack_root: Path, pipeline_id: str) -> None:
+    for folder in ("pipelines", "prompts", "schemas"):
+        (pack_root / folder).mkdir(parents=True, exist_ok=True)
+
+    slug = pipeline_id.replace(".", "_")
+    prompt_rel = Path("prompts") / f"{slug}.txt"
+    schema_rel = Path("schemas") / f"{slug}.schema.json"
+    pipeline_payload = {
+        "pipeline_id": pipeline_id,
+        "description": "Scratch execution pack",
+        "prompt_template_path": prompt_rel.as_posix(),
+        "output_schema_path": schema_rel.as_posix(),
+        "input_glob_default": "**/*.json",
+        "output_ext": ".json",
+        "codex_model": "gpt-5.3-codex-spark",
+        "codex_sandbox": "read-only",
+        "codex_ask_for_approval": "never",
+        "codex_web_search": "disabled",
+        "codex_timeout_seconds": 180,
+        "codex_cd_mode": "asset_root",
+        "codex_execution_context": "scratch",
+        "codex_home_profile": "recipe",
+    }
+    (pack_root / "pipelines" / f"{pipeline_id}.json").write_text(
+        json.dumps(pipeline_payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (pack_root / prompt_rel).write_text("INPUT={{INPUT_PATH}}\n", encoding="utf-8")
+    (pack_root / schema_rel).write_text(
+        json.dumps(
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["ok", "cd", "input_path", "codex_home"],
+                "properties": {
+                    "ok": {"type": "string"},
+                    "cd": {"type": "string"},
+                    "input_path": {"type": "string"},
+                    "codex_home": {"type": "string"},
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_one_with_root_and_cd_mode(tmp_path: Path) -> None:
     repo_root = find_repo_root()
     pack_root = repo_root / "examples" / "pipeline_pack_demo"
@@ -256,6 +349,56 @@ def test_process_with_root_and_cd_mode(tmp_path: Path) -> None:
         assert row["ok"] == "OK"
         assert row["cd"] == str(input_dir.resolve())
         assert row["input_path"] == str(source_path.resolve())
+
+
+def test_process_recipe_style_pipeline_uses_scratch_cd_and_profile_codex_home(tmp_path: Path) -> None:
+    pipeline_id = "demo.scratch.recipe.v1"
+    pack_root = tmp_path / "pack"
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    data_dir = tmp_path / "var"
+    codex_home = tmp_path / "recipe-home"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    (input_dir / "recipe.json").write_text("{}", encoding="utf-8")
+    _write_scratch_pack(pack_root, pipeline_id)
+
+    fake_bin = tmp_path / "bin"
+    _write_fake_codex_with_env(fake_bin)
+    env = _env_with_fake_codex(fake_bin)
+    env["CODEX_FARM_CODEX_HOME_RECIPE"] = str(codex_home.resolve())
+
+    result = runner.invoke(
+        app,
+        [
+            "process",
+            "--root",
+            str(pack_root),
+            "--pipeline",
+            pipeline_id,
+            "--in",
+            str(input_dir),
+            "--out",
+            str(output_dir),
+            "--workers",
+            "1",
+            "--data-dir",
+            str(data_dir),
+            "--json",
+        ],
+        env=env,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["codex_execution_context"] == "scratch"
+    assert payload["codex_home_path"] == str(codex_home.resolve())
+
+    output_path = output_dir / "recipe.json"
+    assert output_path.exists()
+    row = json.loads(output_path.read_text(encoding="utf-8"))
+    assert row["cd"].startswith(str((data_dir / "execution_contexts").resolve()))
+    assert row["cd"] != str(pack_root.resolve())
+    assert row["codex_home"] == str(codex_home.resolve())
 
 
 def test_run_errors_json_on_schema_failure(tmp_path: Path) -> None:
