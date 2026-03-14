@@ -83,3 +83,7 @@ For `run create --json`, key caller fields include:
 - `codex_reasoning_effort`
 - `run_id`
 - `total`
+
+## Precheck behavior
+
+`one`, `process`, and `go` use the resolved `--model` / `--reasoning-effort` values for the startup non-interactive Codex smoke check. If that precheck fails, the failure now reflects the same model/effort pair the command would have used for real execution.

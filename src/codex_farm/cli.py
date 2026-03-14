@@ -43,7 +43,7 @@ from .db import (
     run_status,
     set_run_control_state,
 )
-from .doctor import check_codex_login_status, run_doctor_checks
+from .doctor import run_codex_execution_checks, run_doctor_checks
 from .model_catalog import list_codex_models
 from .pack_lint import LintReport, lint_exit_code, lint_pack, lint_schema_file
 from .heads_up import (
@@ -117,21 +117,29 @@ def _ensure_codex_login_precheck_or_die(
     *,
     command_name: str,
     enabled: bool,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> None:
     if not enabled:
         return
     if _is_truthy(os.environ.get(LOGIN_PRECHECK_SKIP_ENV)):
         return
-    login_check = check_codex_login_status(timeout_seconds=20)
-    if login_check.ok:
+    checks, all_ok = run_codex_execution_checks(
+        login_timeout_seconds=20,
+        smoke_timeout_seconds=60,
+        model=model,
+        reasoning_effort=reasoning_effort,
+    )
+    if all_ok:
         return
+    failed_check = next((check for check in checks if not check.ok), checks[0])
     typer.echo(
-        f"codex login precheck failed before `{command_name}`: {login_check.detail}",
+        f"codex execution precheck failed before `{command_name}`: {failed_check.detail}",
         err=True,
     )
     typer.echo(
         (
-            "Run `codex login` (or `codex`) and sign in before retrying. "
+            "Run `codex` once and confirm non-interactive `codex exec` works before retrying. "
             f"To bypass once, pass --no-login-precheck or set {LOGIN_PRECHECK_SKIP_ENV}=1."
         ),
         err=True,
@@ -1305,11 +1313,10 @@ def one_command(
     login_precheck: bool = typer.Option(
         True,
         "--login-precheck/--no-login-precheck",
-        help="Check `codex login status` before execution starts.",
+        help="Check `codex login status` plus a non-interactive `codex exec` before execution starts.",
     ),
 ) -> None:
     """Process one file through one pipeline."""
-    _ensure_codex_login_precheck_or_die(command_name="one", enabled=login_precheck)
     farm_root = _resolve_farm_root_or_die(root)
     model_override = _resolve_model_override_or_die(model)
     effort_override = _resolve_reasoning_effort_override_or_die(reasoning_effort)
@@ -1323,6 +1330,12 @@ def one_command(
         effort_override
         if effort_override is not None
         else spec.codex_reasoning_effort
+    )
+    _ensure_codex_login_precheck_or_die(
+        command_name="one",
+        enabled=login_precheck,
+        model=selected_model,
+        reasoning_effort=selected_effort,
     )
     selected_output_schema = (
         output_schema_override
@@ -2235,7 +2248,7 @@ def worker_command(
     login_precheck: bool = typer.Option(
         True,
         "--login-precheck/--no-login-precheck",
-        help="Check `codex login status` before worker leasing starts.",
+        help="Check `codex login status` plus a non-interactive `codex exec` before worker leasing starts.",
     ),
 ) -> None:
     """Run a worker loop."""
@@ -2361,12 +2374,11 @@ def process_command(
     login_precheck: bool = typer.Option(
         True,
         "--login-precheck/--no-login-precheck",
-        help="Check `codex login status` before creating and processing the run.",
+        help="Check `codex login status` plus a non-interactive `codex exec` before creating and processing the run.",
     ),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Create a run for a folder and process all tasks with N workers."""
-    _ensure_codex_login_precheck_or_die(command_name="process", enabled=login_precheck)
     farm_root = _resolve_farm_root_or_die(root)
     model_override = _resolve_model_override_or_die(model)
     effort_override = _resolve_reasoning_effort_override_or_die(reasoning_effort)
@@ -2386,6 +2398,12 @@ def process_command(
         effort_override
         if effort_override is not None
         else spec.codex_reasoning_effort
+    )
+    _ensure_codex_login_precheck_or_die(
+        command_name="process",
+        enabled=login_precheck,
+        model=selected_model,
+        reasoning_effort=selected_effort,
     )
     selected_output_schema = output_schema_override or spec.output_schema_path
 
@@ -2624,11 +2642,10 @@ def go_command(
     login_precheck: bool = typer.Option(
         True,
         "--login-precheck/--no-login-precheck",
-        help="Check `codex login status` before creating and processing the run.",
+        help="Check `codex login status` plus a non-interactive `codex exec` before creating and processing the run.",
     ),
 ) -> None:
     """Interactive inbox/outbox mode."""
-    _ensure_codex_login_precheck_or_die(command_name="go", enabled=login_precheck)
     farm_root = _resolve_farm_root_or_die(root)
     model_override = _resolve_model_override_or_die(model)
     effort_override = _resolve_reasoning_effort_override_or_die(reasoning_effort)
@@ -2658,12 +2675,6 @@ def go_command(
     if selected_idx < 1 or selected_idx > len(pipelines):
         raise typer.BadParameter("Pipeline selection out of range")
 
-    worker_count = typer.prompt("Worker count", default="8")
-    try:
-        workers = max(1, int(worker_count))
-    except ValueError as exc:
-        raise typer.BadParameter("Worker count must be an integer") from exc
-
     selected = _resolve_pipeline_for_benchmark_mode(
         selected_pipeline_id=pipelines[selected_idx - 1].pipeline_id,
         benchmark_mode=benchmark_mode_override,
@@ -2675,7 +2686,19 @@ def go_command(
         if effort_override is not None
         else selected.codex_reasoning_effort
     )
+    _ensure_codex_login_precheck_or_die(
+        command_name="go",
+        enabled=login_precheck,
+        model=selected_model,
+        reasoning_effort=selected_effort,
+    )
     selected_output_schema = output_schema_override or selected.output_schema_path
+
+    worker_count = typer.prompt("Worker count", default="8")
+    try:
+        workers = max(1, int(worker_count))
+    except ValueError as exc:
+        raise typer.BadParameter("Worker count must be an integer") from exc
     input_dir = (data_dir_resolved / "inbox").resolve()
     output_dir = (
         data_dir_resolved

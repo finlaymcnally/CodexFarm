@@ -85,6 +85,7 @@ Important details:
 - Both stderr and stdout passthrough tails (up to 20 lines each) are returned to callers for failure diagnostics.
 - A usage CSV row is appended per Codex call (`codex_exec_activity.csv`) with timing, token usage (from `turn.completed.usage`), prompt text, exit data, and optional run/task context.
 - Callers can pass `trace_output_path` so each invocation writes a JSON trace artifact with raw Codex JSON events, passthrough lines, and action/reasoning event slices.
+- Trace classification is intentionally value-aware: modern `codex exec --json` often wraps reasoning inside `{"type":"item.completed","item":{"type":"reasoning",...}}`, so nested string values and `item.type` must count during reasoning/action slicing.
 - Telemetry rows also include parsed event types/counts, output payload fingerprint/preview, normalized failure categories, and structured pass-forward context (retry error carry-forward and applied Heads Up tips) for caller-side prompt tuning.
 
 ## 2) Output acceptance rules (`codex_exec.py`)
@@ -134,7 +135,13 @@ Checks:
 1. Python version >= 3.11.
 2. `codex` executable exists and `codex --version` succeeds.
 3. Login status check: `codex login status` must indicate logged-in session.
-4. Non-interactive smoke call: `codex --ask-for-approval never exec --skip-git-repo-check --sandbox read-only --model gpt-5.3-codex-spark "Reply with exactly: OK"`.
+4. Non-interactive smoke call: `codex --ask-for-approval never exec --skip-git-repo-check --sandbox read-only --model <resolved precheck model> [--config model_reasoning_effort="<resolved effort>"] "Reply with exactly: OK"`.
+   CLI execution prechecks now rely on this same smoke path, not login status alone, because websocket auth failures can still happen after a superficially "logged in" status.
+
+Precheck model/effort source:
+
+- `doctor` and `worker` use the generic default smoke model because they are not tied to one resolved run config.
+- `one`, `process`, and `go` pass their already-resolved execution model and reasoning effort into the smoke call, so preflight failures reflect the same Codex settings that real execution will use.
 
 Smoke success rule is intentionally tolerant:
 
@@ -171,6 +178,7 @@ Telemetry schema identity rule:
 - `run_codex_exec(...)` now accepts both execution schema path and optional logical schema path.
 - Worker passes frozen schema file for execution/validation while telemetry `output_schema_path` preserves logical source schema identity when available.
 - `run_codex_exec(...)` also accepts optional `trace_output_path`; trace writes are best-effort and never fail task execution.
+- Trace heuristics must keep recognizing nested wrapper events such as `item.completed`; otherwise downstream callers like recipeimport see trace files with `reasoning_event_count=0` even though reasoning text exists in the raw event stream.
 
 ## 5.1) Verification visibility surfaces
 

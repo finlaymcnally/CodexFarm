@@ -340,26 +340,29 @@ def _event_type_name(event: Mapping[str, object]) -> str:
     return raw_type.strip()
 
 
-def _value_contains_key_hints(
+def _value_contains_hints(
     value: object,
     *,
-    key_hints: tuple[str, ...],
+    hints: tuple[str, ...],
     max_depth: int = 4,
 ) -> bool:
     if max_depth < 0:
         return False
+    lowered_hints = tuple(item.lower() for item in hints)
+    if isinstance(value, str):
+        value_text = value.lower()
+        return any(hint in value_text for hint in lowered_hints)
     if isinstance(value, dict):
-        lowered_hints = tuple(item.lower() for item in key_hints)
         for key, nested in value.items():
             key_text = str(key).lower()
             if any(hint in key_text for hint in lowered_hints):
                 return True
-            if _value_contains_key_hints(nested, key_hints=key_hints, max_depth=max_depth - 1):
+            if _value_contains_hints(nested, hints=hints, max_depth=max_depth - 1):
                 return True
         return False
     if isinstance(value, list):
         return any(
-            _value_contains_key_hints(item, key_hints=key_hints, max_depth=max_depth - 1)
+            _value_contains_hints(item, hints=hints, max_depth=max_depth - 1)
             for item in value
         )
     return False
@@ -374,7 +377,13 @@ def _event_matches_trace_hints(
     event_type = _event_type_name(event).lower()
     if event_type and any(hint in event_type for hint in type_hints):
         return True
-    return _value_contains_key_hints(event, key_hints=key_hints)
+    if event_type == "item.completed":
+        item = event.get("item")
+        if isinstance(item, Mapping):
+            item_type = _event_type_name(item).lower()
+            if item_type and any(hint in item_type for hint in type_hints):
+                return True
+    return _value_contains_hints(event, hints=key_hints)
 
 
 def _json_safe(value: object) -> object:

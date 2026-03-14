@@ -81,6 +81,12 @@ These helpers shape behavior across multiple commands:
 - accepts normalized Codex effort values: `none|minimal|low|medium|high|xhigh`.
 - supports CLI aliases: `--effort`, `--reasoning-effort`, `--thinking-effort`, `--codex-reasoning-effort`, `--codex-thinking-effort`.
 
+- `_ensure_codex_login_precheck_or_die(command_name, enabled, model, reasoning_effort)`
+- skips when disabled or `CODEX_FARM_SKIP_LOGIN_PRECHECK` is truthy.
+- otherwise runs `run_codex_execution_checks(...)`.
+- `one`, `process`, and `go` pass the same resolved model/effort they will execute with, so the smoke check does not silently fall back to the default model.
+- `worker` has no single run-config model up front, so its precheck stays generic.
+
 - `_resolve_one_cd_dir(...)`
 - for `one`, `--workspace-root` wins.
 - without override:
@@ -316,7 +322,7 @@ Behavior:
 - Optional `--output-schema` overrides pipeline `output_schema_path` for Codex structured output and local validation.
 - Optional `--heads-up` enables prompt augmentation from learned tips in local SQLite.
 - Optional `--heads-up-max-tips` caps appended tips (default `3`, min `1`, max `8`).
-- Runs login precheck by default (`codex login status`) before execution; bypass with `--no-login-precheck` or `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
+- Runs execution precheck by default (`codex login status` plus a non-interactive `codex exec` smoke check) before execution; bypass with `--no-login-precheck` or `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
 - Resolves Codex `--cd` via `_resolve_one_cd_dir`.
 - Renders prompt from template (`{{INPUT_PATH}}` and `{{INPUT_TEXT}}` substitutions are supported; required token is selected by pipeline `prompt_input_mode`).
 - When `--heads-up` is enabled, computes an input signature and appends matching `Heads up` tips before execution.
@@ -579,7 +585,7 @@ Purpose:
 Behavior:
 
 - Optional `--root` is validated only when passed.
-- Runs login precheck by default (`codex login status`) before leasing tasks; bypass with `--no-login-precheck` or `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
+- Runs execution precheck by default (`codex login status` plus a non-interactive `codex exec` smoke check) before leasing tasks; bypass with `--no-login-precheck` or `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
 - If `--worker-id` not provided, generates `worker-<8 hex chars>`.
 - Calls `worker_loop(...)` and exits with that exact code.
 
@@ -599,7 +605,7 @@ Behavior:
 - Resolves optional output-schema override (`--output-schema`).
 - Resolves optional recipeimport benchmark mode (`--recipeimport-benchmark-mode line_label_v1`) and debug capture toggle (`--recipeimport-benchmark-debug`).
 - When benchmark mode is enabled, process dispatches to pipeline `recipeimport.benchmark.line_label.v1`.
-- Runs login precheck by default (`codex login status`) before run creation; bypass with `--no-login-precheck` or `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
+- Runs execution precheck by default (`codex login status` plus a non-interactive `codex exec` smoke check) before run creation; bypass with `--no-login-precheck` or `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
 - Optional `--incremental` enables planning-time reuse from the latest compatible prior run.
 - Optional `--incremental-from <run_id>` forces one source run and fails on incompatibility.
 - Glob selection rule:
@@ -725,7 +731,7 @@ Flow:
 - When benchmark mode is enabled, go dispatches execution to pipeline `recipeimport.benchmark.line_label.v1`.
 - Optional `--heads-up`/`--heads-up-max-tips` persist run-level prompt-adaptation settings for worker execution.
 - Optional `--incremental` and `--incremental-from` persist incremental planning intent for run reproducibility.
-- Runs login precheck by default (`codex login status`) before run creation; bypass with `--no-login-precheck` or `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
+- Runs execution precheck by default (`codex login status` plus a non-interactive `codex exec` smoke check) before run creation; bypass with `--no-login-precheck` or `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
 - Creates run and executes workers similarly to `process`.
 - When `--heads-up` is enabled and run reaches terminal status, performs one best-effort post-run learning call and prints `Heads Up tips added: <n>`.
 
@@ -740,7 +746,7 @@ Exit codes:
 - `lint --json` is machine-facing; keep stdout JSON-only.
 - `run create` default glob is always `"**/*.json"`, while `process` defaults to pipeline `input_glob_default` when `--glob` is omitted.
 - `process` now uses adaptive run-level 429 handling (cooldown + reduced concurrency + recovery) instead of hard-stop-on-first-hit behavior.
-- Login precheck defaults to enabled on `one`, `worker`, `process`, and `go`; `--no-login-precheck` and env `CODEX_FARM_SKIP_LOGIN_PRECHECK=1` are explicit bypass controls.
+- Execution precheck defaults to enabled on `one`, `worker`, `process`, and `go`; it checks both `codex login status` and a non-interactive `codex exec` smoke call. `--no-login-precheck` and env `CODEX_FARM_SKIP_LOGIN_PRECHECK=1` remain the explicit bypass controls.
 - Persisted run config must include absolute `farm_root`; include `workspace_root` only when explicitly provided.
 - Persisted run config includes `codex_model` only when the user passes `--model`; workers honor this override instead of pipeline default.
 - Persisted run config includes `codex_reasoning_effort` only when the user passes effort aliases; workers honor this override instead of pipeline default.
@@ -833,5 +839,5 @@ Known rough edges to preserve context:
 
 ### 2026-03-02_00.52.58 - Login preflight before queueing/starting execution
 - Missing Codex login used to fail later in worker attempts with noisy retry churn.
-- Execution entrypoints now preflight via `codex login status` by default before run creation or worker leasing on `one`, `worker`, `process`, and `go`.
+- Execution entrypoints now preflight via `codex login status` plus a non-interactive `codex exec` smoke check before run creation or worker leasing on `one`, `worker`, `process`, and `go`.
 - Explicit bypass controls: `--no-login-precheck` / `CODEX_FARM_SKIP_LOGIN_PRECHECK=1` for intentional non-interactive environments.

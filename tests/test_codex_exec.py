@@ -1,4 +1,5 @@
 import csv
+from datetime import UTC, datetime
 import hashlib
 import json
 from pathlib import Path
@@ -9,6 +10,7 @@ import pytest
 from codex_farm.codex_exec import (
     CodexExecTimeoutError,
     _USAGE_LOG_FIELDS,
+    _persist_trace_artifact,
     extract_retry_after_seconds,
     is_auth_failure_message,
     run_codex_exec,
@@ -350,6 +352,59 @@ def test_run_codex_exec_persists_trace_artifact_and_trace_metadata(
     assert row["trace_reasoning_count"] == "1"
     assert json.loads(row["trace_action_types_json"]) == ["tool.exec"]
     assert json.loads(row["trace_reasoning_types_json"]) == ["reasoning.note"]
+
+
+def test_persist_trace_artifact_captures_nested_item_completed_reasoning(
+    tmp_path: Path,
+) -> None:
+    trace_path = tmp_path / "traces" / "nested.trace.json"
+    started_at = datetime(2026, 3, 4, 22, 15, tzinfo=UTC)
+    finished_at = datetime(2026, 3, 4, 22, 15, 1, tzinfo=UTC)
+    events = [
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "item_0",
+                "type": "reasoning",
+                "text": "**Determining recipe boundaries including variations**",
+            },
+        }
+    ]
+
+    (
+        resolved_trace_path,
+        action_count,
+        action_types,
+        reasoning_count,
+        reasoning_types,
+    ) = _persist_trace_artifact(
+        trace_output_path=trace_path,
+        usage_context={"source": "worker", "task_id": "task-1"},
+        started_at=started_at,
+        finished_at=finished_at,
+        duration_ms=1000,
+        status="ok",
+        exit_code=0,
+        model="gpt-5.3-codex-spark",
+        reasoning_effort="low",
+        cmd=["codex", "exec"],
+        prompt="Return JSON.",
+        stdout='{"type":"item.completed","item":{"type":"reasoning","text":"trace"}}',
+        stderr="",
+        events=events,
+        passthrough_lines=[],
+    )
+
+    assert resolved_trace_path == trace_path.resolve()
+    assert action_count == 0
+    assert action_types == []
+    assert reasoning_count == 1
+    assert reasoning_types == ["item.completed"]
+
+    trace_payload = json.loads(trace_path.read_text(encoding="utf-8"))
+    assert trace_payload["reasoning_event_count"] == 1
+    assert trace_payload["reasoning_event_types"] == ["item.completed"]
+    assert trace_payload["reasoning_events"] == events
 
 
 def test_run_codex_exec_logs_logical_schema_path_when_provided(

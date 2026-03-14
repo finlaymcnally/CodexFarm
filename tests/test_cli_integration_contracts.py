@@ -490,14 +490,29 @@ def test_process_login_precheck_fails_fast_before_run_creation(
 ) -> None:
     monkeypatch.delenv("CODEX_FARM_SKIP_LOGIN_PRECHECK", raising=False)
 
-    def fake_login_check(timeout_seconds: int = 20):
-        return CheckResult(
-            name="codex login status",
-            ok=False,
-            detail="Not logged in using ChatGPT",
+    def fake_execution_checks(
+        login_timeout_seconds: int = 20,
+        smoke_timeout_seconds: int = 60,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ):
+        return (
+            [
+                CheckResult(
+                    name="codex login status",
+                    ok=False,
+                    detail="Not logged in using ChatGPT",
+                ),
+                CheckResult(
+                    name="codex non-interactive check",
+                    ok=False,
+                    detail="Skipped because login status check failed",
+                ),
+            ],
+            False,
         )
 
-    monkeypatch.setattr("codex_farm.cli.check_codex_login_status", fake_login_check)
+    monkeypatch.setattr("codex_farm.cli.run_codex_execution_checks", fake_execution_checks)
 
     pack = tmp_path / "pack"
     input_dir = tmp_path / "input"
@@ -526,7 +541,75 @@ def test_process_login_precheck_fails_fast_before_run_creation(
     )
 
     assert result.exit_code == 1
-    assert "codex login precheck failed before `process`" in result.stderr
+    assert "codex execution precheck failed before `process`" in result.stderr
+    db_path = data_dir / "codex_farm.sqlite3"
+    assert not db_path.exists()
+
+
+def test_process_login_precheck_fails_fast_on_websocket_auth_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("CODEX_FARM_SKIP_LOGIN_PRECHECK", raising=False)
+
+    def fake_execution_checks(
+        login_timeout_seconds: int = 20,
+        smoke_timeout_seconds: int = 60,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ):
+        return (
+            [
+                CheckResult(
+                    name="codex login status",
+                    ok=True,
+                    detail="Logged in using ChatGPT",
+                ),
+                CheckResult(
+                    name="codex non-interactive check",
+                    ok=False,
+                    detail=(
+                        "WebSocket error: HTTP 403 Forbidden "
+                        "wss://chatgpt.com/backend-api/codex/responses; "
+                        "authentication appears invalid for this machine. "
+                        "Run `codex` once and sign in with ChatGPT."
+                    ),
+                ),
+            ],
+            False,
+        )
+
+    monkeypatch.setattr("codex_farm.cli.run_codex_execution_checks", fake_execution_checks)
+
+    pack = tmp_path / "pack"
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    data_dir = tmp_path / "var"
+    pipeline_id = "demo.contract.precheck.websocket.v1"
+    _write_pipeline_pack(pack, pipeline_id)
+    input_dir.mkdir(parents=True)
+    (input_dir / "a.json").write_text("{}", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "process",
+            "--root",
+            str(pack),
+            "--pipeline",
+            pipeline_id,
+            "--in",
+            str(input_dir),
+            "--out",
+            str(output_dir),
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "codex execution precheck failed before `process`" in result.stderr
+    assert "403 Forbidden" in result.stderr
     db_path = data_dir / "codex_farm.sqlite3"
     assert not db_path.exists()
 
@@ -537,14 +620,29 @@ def test_process_no_login_precheck_bypasses_login_failure(
 ) -> None:
     monkeypatch.delenv("CODEX_FARM_SKIP_LOGIN_PRECHECK", raising=False)
 
-    def fake_login_check(timeout_seconds: int = 20):
-        return CheckResult(
-            name="codex login status",
-            ok=False,
-            detail="Not logged in using ChatGPT",
+    def fake_execution_checks(
+        login_timeout_seconds: int = 20,
+        smoke_timeout_seconds: int = 60,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ):
+        return (
+            [
+                CheckResult(
+                    name="codex login status",
+                    ok=False,
+                    detail="Not logged in using ChatGPT",
+                ),
+                CheckResult(
+                    name="codex non-interactive check",
+                    ok=False,
+                    detail="Skipped because login status check failed",
+                ),
+            ],
+            False,
         )
 
-    monkeypatch.setattr("codex_farm.cli.check_codex_login_status", fake_login_check)
+    monkeypatch.setattr("codex_farm.cli.run_codex_execution_checks", fake_execution_checks)
 
     pack = tmp_path / "pack"
     input_dir = tmp_path / "input"
@@ -591,6 +689,99 @@ def test_process_no_login_precheck_bypasses_login_failure(
     payload = json.loads(result.stdout)
     assert payload["status"] == "done"
     assert payload["counts"]["done"] == 1
+
+
+def test_process_login_precheck_uses_selected_model_and_effort(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("CODEX_FARM_SKIP_LOGIN_PRECHECK", raising=False)
+    captured: list[dict[str, str | None]] = []
+
+    def fake_execution_checks(
+        login_timeout_seconds: int = 20,
+        smoke_timeout_seconds: int = 60,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ):
+        captured.append(
+            {
+                "model": model,
+                "reasoning_effort": reasoning_effort,
+            }
+        )
+        return (
+            [
+                CheckResult(
+                    name="codex login status",
+                    ok=True,
+                    detail="Logged in using ChatGPT",
+                ),
+                CheckResult(
+                    name="codex non-interactive check",
+                    ok=True,
+                    detail="OK",
+                ),
+            ],
+            True,
+        )
+
+    monkeypatch.setattr("codex_farm.cli.run_codex_execution_checks", fake_execution_checks)
+
+    pack = tmp_path / "pack"
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    data_dir = tmp_path / "var"
+    pipeline_id = "demo.contract.precheck.model.v1"
+    _write_pipeline_pack(pack, pipeline_id)
+    input_dir.mkdir(parents=True)
+    (input_dir / "a.json").write_text("{}", encoding="utf-8")
+
+    def fake_run_codex_exec(**kwargs):
+        output_path = kwargs["output_path"]
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        prompt_line = kwargs["prompt"].strip().splitlines()[-1]
+        input_path = prompt_line.replace("Input file path: ", "")
+        output_path.write_text(
+            json.dumps({"ok": "OK", "source_path": input_path}),
+            encoding="utf-8",
+        )
+        return CodexExecResult(ok=True, exit_code=0, stderr_tail="")
+
+    monkeypatch.setattr("codex_farm.worker.run_codex_exec", fake_run_codex_exec)
+
+    result = runner.invoke(
+        app,
+        [
+            "process",
+            "--root",
+            str(pack),
+            "--pipeline",
+            pipeline_id,
+            "--in",
+            str(input_dir),
+            "--out",
+            str(output_dir),
+            "--data-dir",
+            str(data_dir),
+            "--model",
+            "gpt-5.1-codex-mini",
+            "--reasoning-effort",
+            "medium",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert captured == [
+        {
+            "model": "gpt-5.1-codex-mini",
+            "reasoning_effort": "medium",
+        }
+    ]
+    payload = json.loads(result.stdout)
+    assert payload["codex_model"] == "gpt-5.1-codex-mini"
+    assert payload["codex_reasoning_effort"] == "medium"
 
 
 def test_run_progress_json_contract(tmp_path: Path) -> None:

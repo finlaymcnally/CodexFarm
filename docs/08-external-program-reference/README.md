@@ -43,7 +43,7 @@ Use this folder when another app or script drives `codex-farm` via CLI and JSON 
   - JSON payloads include an additive `incremental` object with reuse counts and fallback reasons.
   - `run tasks --json` exposes reuse provenance per task (`reused`, `reused_from_run_id`, `reused_from_task_id`).
 - Machine-safe outputs:
-  - execution commands (`one`, `worker`, `process`, `go`) run login precheck by default (`codex login status`).
+- execution commands (`one`, `worker`, `process`, `go`) run execution precheck by default (`codex login status` plus a non-interactive `codex exec` smoke check).
   - callers can bypass precheck intentionally with `--no-login-precheck` or env `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
   - `process --json` keeps stdout parseable (single JSON payload).
   - `process --progress-events` adds machine-readable stderr event lines prefixed with `__codex_farm_progress__ `.
