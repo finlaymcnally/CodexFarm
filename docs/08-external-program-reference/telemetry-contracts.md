@@ -55,7 +55,7 @@ These fields are designed so callers can identify:
 - `trace_path`, `trace_action_count`, `trace_action_types_json`, `trace_reasoning_count`, `trace_reasoning_types_json`
 
 `output_preview` is intentionally truncated and should be treated as diagnostic context, not canonical output. Use `output_path` for full payload retrieval.
-`trace_path` points to a full invocation trace JSON artifact (when trace capture was enabled by the caller path) that includes raw events and action/reasoning slices.
+`trace_path` points to a full invocation trace JSON artifact (when trace capture was enabled by the caller path) that includes raw events and action/reasoning slices. `trace_action_count` and `trace_reasoning_count` only reflect explicit captured event types, not words found inside normal output payload text.
 
 ## Codex event and token signals
 

@@ -407,6 +407,65 @@ def test_persist_trace_artifact_captures_nested_item_completed_reasoning(
     assert trace_payload["reasoning_events"] == events
 
 
+def test_persist_trace_artifact_does_not_infer_trace_from_agent_message_text(
+    tmp_path: Path,
+) -> None:
+    trace_path = tmp_path / "traces" / "agent-message.trace.json"
+    started_at = datetime(2026, 3, 14, 17, 56, tzinfo=UTC)
+    finished_at = datetime(2026, 3, 14, 17, 56, 1, tzinfo=UTC)
+    events = [
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "item_0",
+                "type": "agent_message",
+                "text": json.dumps(
+                    {
+                        "reasoning_tags": ["analysis", "decision"],
+                        "summary": "deliberate about next action",
+                    }
+                ),
+            },
+        }
+    ]
+
+    (
+        resolved_trace_path,
+        action_count,
+        action_types,
+        reasoning_count,
+        reasoning_types,
+    ) = _persist_trace_artifact(
+        trace_output_path=trace_path,
+        usage_context={"source": "worker", "task_id": "task-1"},
+        started_at=started_at,
+        finished_at=finished_at,
+        duration_ms=1000,
+        status="ok",
+        exit_code=0,
+        model="gpt-5.3-codex-spark",
+        reasoning_effort="low",
+        cmd=["codex", "exec"],
+        prompt="Return JSON.",
+        stdout='{"type":"item.completed","item":{"type":"agent_message"}}',
+        stderr="",
+        events=events,
+        passthrough_lines=[],
+    )
+
+    assert resolved_trace_path == trace_path.resolve()
+    assert action_count == 0
+    assert action_types == []
+    assert reasoning_count == 0
+    assert reasoning_types == []
+
+    trace_payload = json.loads(trace_path.read_text(encoding="utf-8"))
+    assert trace_payload["action_event_count"] == 0
+    assert trace_payload["reasoning_event_count"] == 0
+    assert trace_payload["action_events"] == []
+    assert trace_payload["reasoning_events"] == []
+
+
 def test_run_codex_exec_logs_logical_schema_path_when_provided(
     monkeypatch,
     tmp_path: Path,

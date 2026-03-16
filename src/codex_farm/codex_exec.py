@@ -268,17 +268,7 @@ _TRACE_ACTION_TYPE_HINTS = (
     "patch",
     "command",
 )
-_TRACE_ACTION_KEY_HINTS = (
-    "tool",
-    "action",
-    "command",
-    "file",
-    "path",
-    "query",
-    "url",
-)
 _TRACE_REASONING_TYPE_HINTS = ("reason", "thinking", "analysis", "deliberat")
-_TRACE_REASONING_KEY_HINTS = ("reasoning", "thinking", "analysis", "deliberat")
 
 
 def _tail_lines(text: str, max_lines: int = 20) -> str:
@@ -342,39 +332,10 @@ def _event_type_name(event: Mapping[str, object]) -> str:
     return raw_type.strip()
 
 
-def _value_contains_hints(
-    value: object,
-    *,
-    hints: tuple[str, ...],
-    max_depth: int = 4,
-) -> bool:
-    if max_depth < 0:
-        return False
-    lowered_hints = tuple(item.lower() for item in hints)
-    if isinstance(value, str):
-        value_text = value.lower()
-        return any(hint in value_text for hint in lowered_hints)
-    if isinstance(value, dict):
-        for key, nested in value.items():
-            key_text = str(key).lower()
-            if any(hint in key_text for hint in lowered_hints):
-                return True
-            if _value_contains_hints(nested, hints=hints, max_depth=max_depth - 1):
-                return True
-        return False
-    if isinstance(value, list):
-        return any(
-            _value_contains_hints(item, hints=hints, max_depth=max_depth - 1)
-            for item in value
-        )
-    return False
-
-
-def _event_matches_trace_hints(
+def _event_matches_trace_type_hints(
     event: Mapping[str, object],
     *,
     type_hints: tuple[str, ...],
-    key_hints: tuple[str, ...],
 ) -> bool:
     event_type = _event_type_name(event).lower()
     if event_type and any(hint in event_type for hint in type_hints):
@@ -385,7 +346,7 @@ def _event_matches_trace_hints(
             item_type = _event_type_name(item).lower()
             if item_type and any(hint in item_type for hint in type_hints):
                 return True
-    return _value_contains_hints(event, hints=key_hints)
+    return False
 
 
 def _json_safe(value: object) -> object:
@@ -425,16 +386,14 @@ def _persist_trace_artifact(
     action_events: list[dict[str, object]] = []
     reasoning_events: list[dict[str, object]] = []
     for event in events:
-        if _event_matches_trace_hints(
+        if _event_matches_trace_type_hints(
             event,
             type_hints=_TRACE_ACTION_TYPE_HINTS,
-            key_hints=_TRACE_ACTION_KEY_HINTS,
         ):
             action_events.append(event)
-        if _event_matches_trace_hints(
+        if _event_matches_trace_type_hints(
             event,
             type_hints=_TRACE_REASONING_TYPE_HINTS,
-            key_hints=_TRACE_REASONING_KEY_HINTS,
         ):
             reasoning_events.append(event)
 

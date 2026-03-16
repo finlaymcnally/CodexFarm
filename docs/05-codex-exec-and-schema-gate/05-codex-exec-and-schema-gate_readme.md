@@ -87,7 +87,7 @@ Important details:
 - Both stderr and stdout passthrough tails (up to 20 lines each) are returned to callers for failure diagnostics.
 - A usage CSV row is appended per Codex call (`codex_exec_activity.csv`) with timing, token usage (from `turn.completed.usage`), prompt text, exit data, optional run/task context, and additive `execution_context` / `codex_home_path` fields.
 - Callers can pass `trace_output_path` so each invocation writes a JSON trace artifact with raw Codex JSON events, passthrough lines, action/reasoning event slices, and execution-context metadata.
-- Trace classification is intentionally value-aware: modern `codex exec --json` often wraps reasoning inside `{"type":"item.completed","item":{"type":"reasoning",...}}`, so nested string values and `item.type` must count during reasoning/action slicing.
+- Trace classification is intentionally strict: CodexFarm only counts explicit top-level `event.type` values and explicit nested `item.type` values on wrapped `item.completed` events. Payload text inside ordinary `agent_message` outputs must not count as action or reasoning evidence.
 - Telemetry rows also include parsed event types/counts, output payload fingerprint/preview, normalized failure categories, and structured pass-forward context (retry error carry-forward and applied Heads Up tips) for caller-side prompt tuning.
 
 ## 2) Output acceptance rules (`codex_exec.py`)
@@ -194,6 +194,7 @@ When acceptance behavior changes, keep these caller-facing inspection surfaces a
 - `.codex-farm-traces/.../*.trace.json` (worker + one) and `heads_up/traces/*.trace.json` (Heads Up distiller)
 
 Together they are the practical debugging contract for why outputs were accepted, retried, or marked terminal.
+If no explicit reasoning event exists in those artifacts, treat the reasoning trace as not captured rather than inferred.
 
 ## 6) Known non-obvious rules
 

@@ -29,7 +29,7 @@ One row is appended per `run_codex_exec(...)` call.
 - `duration_ms`: wall-clock runtime for this Codex call
 - `tokens_input`, `tokens_cached_input`, `tokens_output`, `tokens_reasoning`, `tokens_total`: usage parsed from Codex JSONL event `turn.completed.usage` when present; when missing entirely, codex-farm writes a fallback estimate (`chars_div_4`) and marks it in `usage_json`
 - `codex_event_count`, `codex_event_types_json`: parsed Codex JSONL event volume/types for each invocation
-- `trace_path`, `trace_action_count`, `trace_action_types_json`, `trace_reasoning_count`, `trace_reasoning_types_json`: persisted trace artifact pointer plus derived action/reasoning event summaries
+- `trace_path`, `trace_action_count`, `trace_action_types_json`, `trace_reasoning_count`, `trace_reasoning_types_json`: persisted trace artifact pointer plus derived action/reasoning event summaries from explicit captured event types only
 - `prompt_text`: full prompt sent to Codex
 - `prompt_sha256`, `prompt_chars`: prompt fingerprint and size
 - `stderr_tail`, `stdout_tail`: recent non-JSON stderr/stdout text for diagnostics
