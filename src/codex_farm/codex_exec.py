@@ -17,6 +17,12 @@ import threading
 import time
 from typing import Mapping
 
+from codex_farm.rollout_reasoning import (
+    RolloutReasoningResult,
+    harvest_rollout_reasoning,
+    resolve_codex_home_path,
+)
+
 try:  # pragma: no cover - available on Linux/macOS, optional on Windows.
     import fcntl
 except ImportError:  # pragma: no cover
@@ -160,6 +166,14 @@ _USAGE_LOG_FIELDS = (
     "trace_action_types_json",
     "trace_reasoning_count",
     "trace_reasoning_types_json",
+    "rollout_reasoning_status",
+    "rollout_path",
+    "rollout_reasoning_item_count",
+    "rollout_reasoning_summary_count",
+    "rollout_reasoning_summary_texts_json",
+    "rollout_reasoning_output_tokens",
+    "rollout_encrypted_reasoning_present",
+    "rollout_recorder_error_detected",
     "prompt_chars",
     "prompt_sha256",
     "prompt_text",
@@ -378,6 +392,8 @@ def _persist_trace_artifact(
     stderr: str,
     events: list[dict[str, object]],
     passthrough_lines: list[str],
+    thread_id: str | None = None,
+    rollout_reasoning: RolloutReasoningResult | None = None,
     env_overrides: Mapping[str, str] | None = None,
 ) -> tuple[Path | None, int | None, list[str], int | None, list[str]]:
     if trace_output_path is None:
@@ -399,6 +415,16 @@ def _persist_trace_artifact(
 
     action_types = _event_types(action_events)
     reasoning_types = _event_types(reasoning_events)
+    effective_thread_id = (thread_id or "").strip() or None
+    if effective_thread_id is None:
+        _, extracted_thread_id = _extract_usage(events)
+        effective_thread_id = extracted_thread_id or None
+    captured_reasoning = _build_captured_reasoning(
+        thread_id=effective_thread_id,
+        reasoning_events=reasoning_events,
+        reasoning_types=reasoning_types,
+        rollout_reasoning=rollout_reasoning,
+    )
     artifact = {
         "schema_version": 1,
         "captured_at_utc": _utc_ts(datetime.now(UTC)),
@@ -416,10 +442,12 @@ def _persist_trace_artifact(
         "worker_id": (usage_context or {}).get("worker_id"),
         "input_path": (usage_context or {}).get("input_path"),
         "execution_context": (usage_context or {}).get("execution_context"),
+        "thread_id": effective_thread_id,
         "codex_home_path": (
             (env_overrides or {}).get("CODEX_HOME")
             or (usage_context or {}).get("codex_home_path")
         ),
+        "captured_reasoning": captured_reasoning,
         "command": cmd,
         "prompt_text": prompt,
         "stdout_raw": stdout,
@@ -508,6 +536,118 @@ def _extract_usage(
             if isinstance(raw_usage, dict):
                 usage = raw_usage
     return usage, thread_id
+
+
+def _build_captured_reasoning(
+    *,
+    thread_id: str | None,
+    reasoning_events: list[dict[str, object]],
+    reasoning_types: list[str],
+    rollout_reasoning: RolloutReasoningResult | None,
+) -> dict[str, object]:
+    rollout_path = ""
+    if rollout_reasoning is not None and rollout_reasoning.rollout_path is not None:
+        rollout_path = str(rollout_reasoning.rollout_path.resolve(strict=False))
+
+    base = {
+        "status": "thread_missing",
+        "source": "none",
+        "thread_id": thread_id,
+        "rollout_path": rollout_path,
+        "summary_texts": [],
+        "reasoning_output_tokens": (
+            rollout_reasoning.reasoning_output_tokens if rollout_reasoning is not None else None
+        ),
+        "encrypted_reasoning_present": (
+            rollout_reasoning.encrypted_reasoning_present if rollout_reasoning is not None else False
+        ),
+        "recorder_error_detected": (
+            rollout_reasoning.recorder_error_detected if rollout_reasoning is not None else False
+        ),
+        "note": "No thread id was captured from stdout, so rollout correlation could not run.",
+    }
+
+    if rollout_reasoning is not None and rollout_reasoning.status == "summary_present":
+        base.update(
+            {
+                "status": "rollout_summary_present",
+                "source": "rollout_summary",
+                "summary_texts": list(rollout_reasoning.summary_texts),
+                "note": "Human-readable reasoning summary was harvested from the matching rollout file.",
+            }
+        )
+        return base
+
+    if reasoning_events:
+        base.update(
+            {
+                "status": "stdout_reasoning_present",
+                "source": "stdout_explicit",
+                "note": (
+                    "Explicit reasoning events were captured on stdout; inspect `reasoning_events` "
+                    "for the raw event payloads."
+                ),
+                "stdout_reasoning_event_count": len(reasoning_events),
+                "stdout_reasoning_event_types": list(reasoning_types),
+            }
+        )
+        return base
+
+    if rollout_reasoning is None:
+        return base
+
+    status_map = {
+        "thread_missing": (
+            "thread_missing",
+            "none",
+            "No thread id was captured from stdout, so rollout correlation could not run.",
+        ),
+        "rollout_missing": (
+            "rollout_missing",
+            "none",
+            "No matching rollout file was found for the captured thread id.",
+        ),
+        "reasoning_missing": (
+            "reasoning_missing",
+            "none",
+            "The matching rollout file did not contain any reasoning items.",
+        ),
+        "summary_empty": (
+            "rollout_summary_empty",
+            "rollout_metadata",
+            "The matching rollout file contained reasoning items but no human-readable summary text.",
+        ),
+        "summary_empty_encrypted_present": (
+            "rollout_summary_empty_encrypted_present",
+            "rollout_metadata",
+            (
+                "The matching rollout file contained reasoning metadata and encrypted content, "
+                "but Codex provided no human-readable summary text."
+            ),
+        ),
+        "summary_present": (
+            "rollout_summary_present",
+            "rollout_summary",
+            "Human-readable reasoning summary was harvested from the matching rollout file.",
+        ),
+    }
+    status, source, note = status_map.get(
+        rollout_reasoning.status,
+        (
+            rollout_reasoning.status,
+            "rollout_metadata",
+            "Rollout reasoning metadata was harvested, but the status was not recognized.",
+        ),
+    )
+    base.update(
+        {
+            "status": status,
+            "source": source,
+            "summary_texts": list(rollout_reasoning.summary_texts),
+            "note": note,
+        }
+    )
+    return base
 
 
 def _as_int(value: object) -> int | None:
@@ -763,6 +903,8 @@ def _log_codex_activity(
     trace_action_types: list[str] | None,
     trace_reasoning_count: int | None,
     trace_reasoning_types: list[str] | None,
+    thread_id_override: str | None = None,
+    rollout_reasoning: RolloutReasoningResult | None = None,
     env_overrides: Mapping[str, str] | None = None,
 ) -> None:
     if usage_log_csv is None:
@@ -771,6 +913,7 @@ def _log_codex_activity(
     events, passthrough_lines = _parse_jsonl_events(stdout)
     event_types = _event_types(events)
     usage, thread_id = _extract_usage(events)
+    effective_thread_id = (thread_id_override or "").strip() or thread_id
     tokens_input = _as_int(usage.get("input_tokens"))
     tokens_cached_input = _as_int(usage.get("cached_input_tokens"))
     tokens_output = _as_int(usage.get("output_tokens"))
@@ -859,7 +1002,7 @@ def _log_codex_activity(
         "tokens_reasoning": tokens_reasoning,
         "tokens_total": tokens_total,
         "usage_json": usage_json,
-        "thread_id": thread_id,
+        "thread_id": effective_thread_id,
         "codex_event_count": len(events),
         "codex_event_types_json": json.dumps(event_types, sort_keys=True) if event_types else "",
         "trace_path": str(trace_path.resolve()) if trace_path is not None else "",
@@ -870,6 +1013,32 @@ def _log_codex_activity(
         "trace_reasoning_count": trace_reasoning_count,
         "trace_reasoning_types_json": (
             json.dumps(trace_reasoning_types, sort_keys=True) if trace_reasoning_types else ""
+        ),
+        "rollout_reasoning_status": rollout_reasoning.status if rollout_reasoning else "",
+        "rollout_path": (
+            str(rollout_reasoning.rollout_path.resolve(strict=False))
+            if rollout_reasoning and rollout_reasoning.rollout_path is not None
+            else ""
+        ),
+        "rollout_reasoning_item_count": (
+            rollout_reasoning.reasoning_item_count if rollout_reasoning else ""
+        ),
+        "rollout_reasoning_summary_count": (
+            rollout_reasoning.summary_count if rollout_reasoning else ""
+        ),
+        "rollout_reasoning_summary_texts_json": (
+            json.dumps(rollout_reasoning.summary_texts, sort_keys=True)
+            if rollout_reasoning and rollout_reasoning.summary_texts
+            else ""
+        ),
+        "rollout_reasoning_output_tokens": (
+            rollout_reasoning.reasoning_output_tokens if rollout_reasoning else ""
+        ),
+        "rollout_encrypted_reasoning_present": (
+            rollout_reasoning.encrypted_reasoning_present if rollout_reasoning else ""
+        ),
+        "rollout_recorder_error_detected": (
+            rollout_reasoning.recorder_error_detected if rollout_reasoning else ""
         ),
         "prompt_chars": len(prompt),
         "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
@@ -1003,6 +1172,17 @@ def run_codex_exec(
             temp_output_path.unlink(missing_ok=True)
         finished_at = datetime.now(UTC)
         duration_ms = int((time.perf_counter() - started_clock) * 1000)
+        timeout_usage, timeout_thread_id = _extract_usage(timeout_events)
+        del timeout_usage
+        effective_codex_home = resolve_codex_home_path(
+            env_overrides=env_overrides,
+            usage_context=usage_context,
+        )
+        timeout_rollout_reasoning = harvest_rollout_reasoning(
+            thread_id=timeout_thread_id or None,
+            codex_home_path=effective_codex_home,
+            stderr_text=timeout_stderr,
+        )
         (
             trace_path,
             trace_action_count,
@@ -1025,6 +1205,8 @@ def run_codex_exec(
             stderr=timeout_stderr,
             events=timeout_events,
             passthrough_lines=timeout_passthrough_lines,
+            thread_id=timeout_thread_id or None,
+            rollout_reasoning=timeout_rollout_reasoning,
             env_overrides=env_overrides,
         )
         _log_codex_activity(
@@ -1059,6 +1241,8 @@ def run_codex_exec(
             trace_action_types=trace_action_types,
             trace_reasoning_count=trace_reasoning_count,
             trace_reasoning_types=trace_reasoning_types,
+            thread_id_override=timeout_thread_id or None,
+            rollout_reasoning=timeout_rollout_reasoning,
             env_overrides=env_overrides,
         )
         raise CodexExecTimeoutError(
@@ -1068,6 +1252,16 @@ def run_codex_exec(
         ) from exc
 
     events, passthrough_lines = _parse_jsonl_events(proc.stdout)
+    _, thread_id = _extract_usage(events)
+    effective_codex_home = resolve_codex_home_path(
+        env_overrides=env_overrides,
+        usage_context=usage_context,
+    )
+    rollout_reasoning = harvest_rollout_reasoning(
+        thread_id=thread_id or None,
+        codex_home_path=effective_codex_home,
+        stderr_text=proc.stderr,
+    )
     event_error_lines = _extract_event_error_lines(events)
     stderr_tail = _tail_lines(proc.stderr)
     stdout_tail = _tail_lines("\n".join(passthrough_lines))
@@ -1141,6 +1335,8 @@ def run_codex_exec(
         stderr=proc.stderr,
         events=events,
         passthrough_lines=passthrough_lines,
+        thread_id=thread_id or None,
+        rollout_reasoning=rollout_reasoning,
         env_overrides=env_overrides,
     )
     _log_codex_activity(
@@ -1175,6 +1371,8 @@ def run_codex_exec(
         trace_action_types=trace_action_types,
         trace_reasoning_count=trace_reasoning_count,
         trace_reasoning_types=trace_reasoning_types,
+        thread_id_override=thread_id or None,
+        rollout_reasoning=rollout_reasoning,
         env_overrides=env_overrides,
     )
     return result

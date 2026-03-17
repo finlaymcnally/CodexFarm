@@ -85,10 +85,11 @@ Important details:
 - Output is directed to a temp file in the final output directory.
 - On accepted output, `os.replace(temp, final)` gives atomic replace semantics.
 - Both stderr and stdout passthrough tails (up to 20 lines each) are returned to callers for failure diagnostics.
-- A usage CSV row is appended per Codex call (`codex_exec_activity.csv`) with timing, token usage (from `turn.completed.usage`), prompt text, exit data, optional run/task context, and additive `execution_context` / `codex_home_path` fields.
-- Callers can pass `trace_output_path` so each invocation writes a JSON trace artifact with raw Codex JSON events, passthrough lines, action/reasoning event slices, and execution-context metadata.
+- A usage CSV row is appended per Codex call (`codex_exec_activity.csv`) with timing, token usage (from `turn.completed.usage`), prompt text, exit data, optional run/task context, additive `execution_context` / `codex_home_path` fields, and rollout reasoning metadata (`rollout_reasoning_*`).
+- Callers can pass `trace_output_path` so each invocation writes a JSON trace artifact with raw Codex JSON events, passthrough lines, action/reasoning event slices, normalized `captured_reasoning`, and execution-context metadata.
 - Trace classification is intentionally strict: CodexFarm only counts explicit top-level `event.type` values and explicit nested `item.type` values on wrapped `item.completed` events. Payload text inside ordinary `agent_message` outputs must not count as action or reasoning evidence.
-- Telemetry rows also include parsed event types/counts, output payload fingerprint/preview, normalized failure categories, and structured pass-forward context (retry error carry-forward and applied Heads Up tips) for caller-side prompt tuning.
+- After stdout parsing, `run_codex_exec(...)` also correlates `thread.started.thread_id` against local rollout files under `CODEX_HOME/sessions/.../rollout-*.jsonl`. That best-effort harvest is observability only; it must never change task success/failure semantics.
+- Telemetry rows also include parsed event types/counts, output payload fingerprint/preview, normalized failure categories, rollout reasoning classification, and structured pass-forward context (retry error carry-forward and applied Heads Up tips) for caller-side prompt tuning.
 
 ## 2) Output acceptance rules (`codex_exec.py`)
 
@@ -182,6 +183,7 @@ Telemetry schema identity rule:
 - Worker passes frozen schema file for execution/validation while telemetry `output_schema_path` preserves logical source schema identity when available.
 - `run_codex_exec(...)` also accepts optional `trace_output_path`; trace writes are best-effort and never fail task execution.
 - Trace heuristics must keep recognizing nested wrapper events such as `item.completed`; otherwise downstream callers like recipeimport see trace files with `reasoning_event_count=0` even though reasoning text exists in the raw event stream.
+- When a rollout file exists, traces now also persist a normalized `captured_reasoning` block that distinguishes stdout reasoning, rollout summaries, empty-summary encrypted rollout metadata, missing rollouts, and missing thread ids.
 
 ## 5.1) Verification visibility surfaces
 
@@ -194,7 +196,7 @@ When acceptance behavior changes, keep these caller-facing inspection surfaces a
 - `.codex-farm-traces/.../*.trace.json` (worker + one) and `heads_up/traces/*.trace.json` (Heads Up distiller)
 
 Together they are the practical debugging contract for why outputs were accepted, retried, or marked terminal.
-If no explicit reasoning event exists in those artifacts, treat the reasoning trace as not captured rather than inferred.
+If no explicit reasoning event exists in those artifacts, inspect the trace artifact's `captured_reasoning` block before concluding that no thinking was available; it now tells you whether rollout reasoning existed but lacked human-readable summary text.
 
 ## 6) Known non-obvious rules
 
@@ -208,6 +210,7 @@ If no explicit reasoning event exists in those artifacts, treat the reasoning tr
 - Run-level model overrides are resolved in CLI/worker before this chunk; `run_codex_exec` should keep treating `model` as the final resolved value.
 - Run-level effort overrides are resolved in CLI/worker before this chunk; `run_codex_exec` should keep treating `reasoning_effort` as the final resolved value.
 - Run-level schema overrides are resolved in CLI/worker before this chunk; `run_codex_exec` should keep treating `output_schema` as the final resolved path.
+- Current local probe result on `gpt-5.3-codex-spark`: forcing `--config model_reasoning_summary=\"concise\"` fails with `unsupported_parameter`, so CodexFarm should not add that flag blindly for this model.
 - `recipe.schemaorg.normalize.v1` output contract requires `recipeInstructions` as an array of `{"@type":"HowToStep","text":...}` objects.
 - `schemas/recipeimport_intermediate_fullshape_v1.schema.json` and `schemas/recipeimport_final_fullshape_v1.schema.json` are inbound acceptance contracts and must validate both sparse real samples and platonic full-shape fixtures under `examples/recipeimport_*`.
 

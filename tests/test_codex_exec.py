@@ -15,11 +15,28 @@ from codex_farm.codex_exec import (
     is_auth_failure_message,
     run_codex_exec,
 )
+from codex_farm.rollout_reasoning import harvest_rollout_reasoning
 
 
 def _read_rows(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
+
+
+def _write_rollout(
+    codex_home: Path,
+    thread_id: str,
+    *payloads: dict[str, object],
+    day_path: str = "2026/03/16",
+) -> Path:
+    rollout_dir = codex_home / "sessions" / Path(day_path)
+    rollout_dir.mkdir(parents=True, exist_ok=True)
+    rollout_path = rollout_dir / f"rollout-2026-03-16T18-11-40-{thread_id}.jsonl"
+    rollout_path.write_text(
+        "\n".join(json.dumps(payload, sort_keys=True) for payload in payloads),
+        encoding="utf-8",
+    )
+    return rollout_path
 
 
 _LEGACY_USAGE_LOG_FIELDS = (
@@ -58,6 +75,177 @@ _LEGACY_USAGE_LOG_FIELDS = (
     "worker_id",
     "input_path",
 )
+
+
+def test_harvest_rollout_reasoning_returns_thread_missing_when_no_thread_id(tmp_path: Path) -> None:
+    codex_home = tmp_path / ".codex"
+
+    result = harvest_rollout_reasoning(
+        thread_id=None,
+        codex_home_path=codex_home,
+        stderr_text="",
+    )
+
+    assert result.status == "thread_missing"
+    assert result.codex_home_path == codex_home.resolve()
+    assert result.rollout_path is None
+    assert result.reasoning_item_count == 0
+    assert result.summary_texts == []
+
+
+def test_harvest_rollout_reasoning_returns_rollout_missing_when_file_absent(
+    tmp_path: Path,
+) -> None:
+    codex_home = tmp_path / ".codex"
+
+    result = harvest_rollout_reasoning(
+        thread_id="thread-123",
+        codex_home_path=codex_home,
+        stderr_text="",
+    )
+
+    assert result.status == "rollout_missing"
+    assert result.rollout_path is None
+
+
+def test_harvest_rollout_reasoning_normalizes_summary_shapes_and_tokens(
+    tmp_path: Path,
+) -> None:
+    codex_home = tmp_path / ".codex"
+    thread_id = "thread-123"
+    rollout_path = _write_rollout(
+        codex_home,
+        thread_id,
+        {
+            "timestamp": "2026-03-16T22:11:41.667Z",
+            "type": "response_item",
+            "payload": {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "**Planning next step**"}],
+                "content": None,
+                "encrypted_content": "ciphertext",
+            },
+        },
+        {
+            "timestamp": "2026-03-16T22:11:42.927Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 20,
+                        "reasoning_output_tokens": 12,
+                        "total_tokens": 120,
+                    }
+                },
+            },
+        },
+    )
+
+    result = harvest_rollout_reasoning(
+        thread_id=thread_id,
+        codex_home_path=codex_home,
+        stderr_text="",
+    )
+
+    assert result.status == "summary_present"
+    assert result.rollout_path == rollout_path.resolve()
+    assert result.reasoning_item_count == 1
+    assert result.summary_count == 1
+    assert result.summary_texts == ["**Planning next step**"]
+    assert result.reasoning_output_tokens == 12
+    assert result.encrypted_reasoning_present is True
+
+
+def test_harvest_rollout_reasoning_supports_legacy_summary_text_entries(
+    tmp_path: Path,
+) -> None:
+    codex_home = tmp_path / ".codex"
+    thread_id = "thread-legacy"
+    _write_rollout(
+        codex_home,
+        thread_id,
+        {
+            "timestamp": "2026-01-23T15:44:24.499Z",
+            "type": "response_item",
+            "payload": {
+                "type": "reasoning",
+                "summary": [],
+                "summary_text": "**Planning to list docs and check subfolders**",
+                "content": None,
+                "encrypted_content": "ciphertext",
+            },
+        },
+        day_path="2026/01/23",
+    )
+
+    result = harvest_rollout_reasoning(
+        thread_id=thread_id,
+        codex_home_path=codex_home,
+        stderr_text="",
+    )
+
+    assert result.status == "summary_present"
+    assert result.summary_texts == ["**Planning to list docs and check subfolders**"]
+
+
+def test_harvest_rollout_reasoning_reports_empty_summary_with_encrypted_content(
+    tmp_path: Path,
+) -> None:
+    codex_home = tmp_path / ".codex"
+    thread_id = "thread-empty"
+    _write_rollout(
+        codex_home,
+        thread_id,
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "reasoning",
+                "summary": [],
+                "content": None,
+                "encrypted_content": "ciphertext",
+            },
+        },
+    )
+
+    result = harvest_rollout_reasoning(
+        thread_id=thread_id,
+        codex_home_path=codex_home,
+        stderr_text="failed to record rollout items: failed to queue rollout items: channel closed",
+    )
+
+    assert result.status == "summary_empty_encrypted_present"
+    assert result.summary_count == 0
+    assert result.summary_texts == []
+    assert result.encrypted_reasoning_present is True
+    assert result.recorder_error_detected is True
+
+
+def test_harvest_rollout_reasoning_reports_reasoning_missing(tmp_path: Path) -> None:
+    codex_home = tmp_path / ".codex"
+    thread_id = "thread-no-reasoning"
+    _write_rollout(
+        codex_home,
+        thread_id,
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "hi"}],
+            },
+        },
+    )
+
+    result = harvest_rollout_reasoning(
+        thread_id=thread_id,
+        codex_home_path=codex_home,
+        stderr_text="",
+    )
+
+    assert result.status == "reasoning_missing"
+    assert result.reasoning_item_count == 0
 
 
 def test_run_codex_exec_migrates_legacy_usage_log_schema(monkeypatch, tmp_path: Path) -> None:
@@ -339,6 +527,7 @@ def test_run_codex_exec_persists_trace_artifact_and_trace_metadata(
 
     trace_payload = json.loads(trace_path.read_text(encoding="utf-8"))
     assert trace_payload["event_count"] == 3
+    assert trace_payload["captured_reasoning"]["status"] == "stdout_reasoning_present"
     assert trace_payload["action_event_count"] == 1
     assert trace_payload["reasoning_event_count"] == 1
     assert "tool.exec" in trace_payload["action_event_types"]
@@ -402,6 +591,7 @@ def test_persist_trace_artifact_captures_nested_item_completed_reasoning(
     assert reasoning_types == ["item.completed"]
 
     trace_payload = json.loads(trace_path.read_text(encoding="utf-8"))
+    assert trace_payload["captured_reasoning"]["status"] == "stdout_reasoning_present"
     assert trace_payload["reasoning_event_count"] == 1
     assert trace_payload["reasoning_event_types"] == ["item.completed"]
     assert trace_payload["reasoning_events"] == events
@@ -461,9 +651,172 @@ def test_persist_trace_artifact_does_not_infer_trace_from_agent_message_text(
 
     trace_payload = json.loads(trace_path.read_text(encoding="utf-8"))
     assert trace_payload["action_event_count"] == 0
+    assert trace_payload["captured_reasoning"]["status"] == "thread_missing"
     assert trace_payload["reasoning_event_count"] == 0
     assert trace_payload["action_events"] == []
     assert trace_payload["reasoning_events"] == []
+
+
+def test_run_codex_exec_persists_rollout_summary_reasoning_metadata(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    codex_home = tmp_path / ".codex"
+    output_path = tmp_path / "out.json"
+    schema_path = tmp_path / "schema.json"
+    log_path = tmp_path / "codex_exec_activity.csv"
+    trace_path = tmp_path / "traces" / "task-rollout.trace.json"
+    schema_path.write_text("{}", encoding="utf-8")
+    _write_rollout(
+        codex_home,
+        "thread-rollout",
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "**Checking schema details**"}],
+                "content": None,
+                "encrypted_content": "ciphertext",
+            },
+        },
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": {
+                        "input_tokens": 40,
+                        "output_tokens": 10,
+                        "reasoning_output_tokens": 9,
+                        "total_tokens": 50,
+                    }
+                },
+            },
+        },
+    )
+
+    def fake_run(cmd, **kwargs):
+        temp_output = Path(cmd[cmd.index("--output-last-message") + 1])
+        temp_output.write_text('{"ok":"OK"}', encoding="utf-8")
+        stdout = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"thread-rollout"}',
+                '{"type":"turn.completed","usage":{"input_tokens":20,"output_tokens":5}}',
+            ]
+        )
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_codex_exec(
+        cd_dir=tmp_path,
+        prompt="Return JSON.",
+        model="gpt-5.3-codex-spark",
+        sandbox="read-only",
+        ask_for_approval="never",
+        web_search="disabled",
+        output_schema=schema_path,
+        output_path=output_path,
+        timeout_seconds=30,
+        env_overrides={"CODEX_HOME": str(codex_home)},
+        usage_log_csv=log_path,
+        trace_output_path=trace_path,
+    )
+
+    assert result.ok is True
+
+    trace_payload = json.loads(trace_path.read_text(encoding="utf-8"))
+    assert trace_payload["thread_id"] == "thread-rollout"
+    assert trace_payload["captured_reasoning"]["status"] == "rollout_summary_present"
+    assert trace_payload["captured_reasoning"]["source"] == "rollout_summary"
+    assert trace_payload["captured_reasoning"]["summary_texts"] == ["**Checking schema details**"]
+    assert trace_payload["captured_reasoning"]["reasoning_output_tokens"] == 9
+
+    rows = _read_rows(log_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["thread_id"] == "thread-rollout"
+    assert row["rollout_reasoning_status"] == "summary_present"
+    assert row["rollout_reasoning_item_count"] == "1"
+    assert row["rollout_reasoning_summary_count"] == "1"
+    assert json.loads(row["rollout_reasoning_summary_texts_json"]) == ["**Checking schema details**"]
+    assert row["rollout_reasoning_output_tokens"] == "9"
+    assert row["rollout_encrypted_reasoning_present"] == "true"
+
+
+def test_run_codex_exec_classifies_empty_rollout_summary_with_encrypted_content(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    codex_home = tmp_path / ".codex"
+    output_path = tmp_path / "out.json"
+    schema_path = tmp_path / "schema.json"
+    log_path = tmp_path / "codex_exec_activity.csv"
+    trace_path = tmp_path / "traces" / "task-empty-rollout.trace.json"
+    schema_path.write_text("{}", encoding="utf-8")
+    _write_rollout(
+        codex_home,
+        "thread-empty-rollout",
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "reasoning",
+                "summary": [],
+                "content": None,
+                "encrypted_content": "ciphertext",
+            },
+        },
+    )
+
+    def fake_run(cmd, **kwargs):
+        temp_output = Path(cmd[cmd.index("--output-last-message") + 1])
+        temp_output.write_text('{"ok":"OK"}', encoding="utf-8")
+        stdout = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"thread-empty-rollout"}',
+                '{"type":"turn.completed","usage":{"input_tokens":20,"output_tokens":5}}',
+            ]
+        )
+        stderr = "failed to record rollout items: failed to queue rollout items: channel closed"
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_codex_exec(
+        cd_dir=tmp_path,
+        prompt="Return JSON.",
+        model="gpt-5.3-codex-spark",
+        sandbox="read-only",
+        ask_for_approval="never",
+        web_search="disabled",
+        output_schema=schema_path,
+        output_path=output_path,
+        timeout_seconds=30,
+        env_overrides={"CODEX_HOME": str(codex_home)},
+        usage_log_csv=log_path,
+        trace_output_path=trace_path,
+    )
+
+    assert result.ok is True
+
+    trace_payload = json.loads(trace_path.read_text(encoding="utf-8"))
+    assert (
+        trace_payload["captured_reasoning"]["status"]
+        == "rollout_summary_empty_encrypted_present"
+    )
+    assert trace_payload["captured_reasoning"]["source"] == "rollout_metadata"
+    assert trace_payload["captured_reasoning"]["summary_texts"] == []
+    assert trace_payload["captured_reasoning"]["encrypted_reasoning_present"] is True
+    assert trace_payload["captured_reasoning"]["recorder_error_detected"] is True
+
+    rows = _read_rows(log_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["rollout_reasoning_status"] == "summary_empty_encrypted_present"
+    assert row["rollout_reasoning_summary_count"] == "0"
+    assert row["rollout_reasoning_summary_texts_json"] == ""
+    assert row["rollout_encrypted_reasoning_present"] == "true"
+    assert row["rollout_recorder_error_detected"] == "true"
 
 
 def test_run_codex_exec_logs_logical_schema_path_when_provided(

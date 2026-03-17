@@ -53,15 +53,23 @@ These fields are designed so callers can identify:
 - `output_sha256`
 - `output_preview`, `output_preview_chars`, `output_preview_truncated`
 - `trace_path`, `trace_action_count`, `trace_action_types_json`, `trace_reasoning_count`, `trace_reasoning_types_json`
+- `rollout_reasoning_status`, `rollout_path`, `rollout_reasoning_item_count`, `rollout_reasoning_summary_count`, `rollout_reasoning_summary_texts_json`, `rollout_reasoning_output_tokens`, `rollout_encrypted_reasoning_present`, `rollout_recorder_error_detected`
 
 `output_preview` is intentionally truncated and should be treated as diagnostic context, not canonical output. Use `output_path` for full payload retrieval.
-`trace_path` points to a full invocation trace JSON artifact (when trace capture was enabled by the caller path) that includes raw events and action/reasoning slices. `trace_action_count` and `trace_reasoning_count` only reflect explicit captured event types, not words found inside normal output payload text.
+`trace_path` points to a full invocation trace JSON artifact (when trace capture was enabled by the caller path) that includes raw events, action/reasoning slices, and a normalized `captured_reasoning` block. `trace_action_count` and `trace_reasoning_count` only reflect explicit captured event types, not words found inside normal output payload text. The `rollout_reasoning_*` columns are additive rollout/session-harvest metadata keyed by the captured `thread_id`.
 
 ## Codex event and token signals
 
 - `tokens_input`, `tokens_cached_input`, `tokens_output`, `tokens_reasoning`, `tokens_total`, `usage_json`
 - `codex_event_count`, `codex_event_types_json`
 - `thread_id`
+
+Interpretation rule for missing thinking traces:
+
+1. If `trace_reasoning_count > 0`, explicit reasoning was captured on stdout.
+2. If `trace_reasoning_count == 0` but `rollout_reasoning_status == summary_present`, human-readable reasoning exists in the rollout file and should be read from `trace_path -> captured_reasoning.summary_texts` or `rollout_reasoning_summary_texts_json`.
+3. If `rollout_reasoning_status == summary_empty_encrypted_present`, reasoning happened but Codex did not provide human-readable summary text.
+4. If `rollout_reasoning_status == rollout_missing` or `thread_missing`, CodexFarm could not correlate a rollout artifact for that run.
 
 ## Practical caller loop
 

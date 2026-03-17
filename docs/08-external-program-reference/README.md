@@ -56,6 +56,7 @@ Use this folder when another app or script drives `codex-farm` via CLI and JSON 
   - `run progress --json` is the spinner-friendly snapshot endpoint (with optional `--watch` polling stream).
   - inspect terminal failures with `run errors --json`; inspect per-task states with `run tasks --json`.
   - inspect failed-attempt evidence indexes with `run forensics --json`; `one` failure output may include `Forensics bundle: <abs path>` on stderr.
+  - invocation trace artifacts now include a normalized `captured_reasoning` block so callers can distinguish stdout reasoning, rollout summary text, empty-summary encrypted rollout metadata, and missing-rollout cases without reverse-engineering raw Codex events.
 
 ## Merged task docs from `docs/tasks`
 
