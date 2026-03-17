@@ -11,7 +11,7 @@ This chunk owns everything that happens after tasks already exist in SQLite: cla
 
 If you start with zero context, use this as the execution mental model for the runtime loop.
 
-`process` worker slots run in-process via `ThreadPoolExecutor`; each worker loop uses its own SQLite connection, and `lease_one_task(...)` transaction semantics are the cross-thread concurrency guard.
+`process` worker slots run in-process via `ThreadPoolExecutor`; each worker loop uses its own SQLite connection, and `lease_one_task(...)` transaction semantics are the cross-thread concurrency guard. There are now two runtime shapes: classic per-task execution in `worker.py`, and session-aware execution in `session_runtime.py` for `structured_loop_agentic_v1`.
 
 ## What This Chunk Owns
 
@@ -25,6 +25,7 @@ If you start with zero context, use this as the execution mental model for the r
 ## Primary Files
 
 - `src/codex_farm/worker.py`
+- `src/codex_farm/session_runtime.py`
 - `src/codex_farm/db.py`
   - `lease_one_task`
   - `mark_task_done`
@@ -76,6 +77,18 @@ Related boundaries:
 17. On failure, capture failure forensics (best-effort) before staged-output cleanup.
 18. Mark task `done`, or requeue/error on failure.
 19. If Heads Up tips were applied and task reached terminal outcome (`done|error`), record usage to update tip scoring.
+
+## Session-Aware Worker Loop
+
+`worker_session_loop(...)` in `src/codex_farm/session_runtime.py` keeps the same lease/retry/finalization shell, but swaps the execution core:
+
+1. Claim one task with the same `lease_one_task(...)` contract.
+2. Load frozen run assets and require `runtime_mode=structured_loop_agentic_v1`.
+3. Boot one persistent Codex session with `start_codex_session(...)` for the first task, freezing the bootstrap prompt, task-turn wrapper, `CODEX_HOME`, and effective `--cd`.
+4. Resume that same session with `resume_codex_session(...)` for later tasks when the pinned project `cd_dir` still matches.
+5. Validate each staged last-message payload locally against the frozen schema, because resumed turns do not expose per-turn `--output-schema`.
+6. Persist `worker_sessions` rows plus task linkage (`session_row_id`, `session_task_index`, `session_turn_index`, `fresh_session_started`) before final task transition.
+7. Reset the session conservatively on ambiguous failures, rate limits, task-budget rollover, or `cd_dir` changes.
 
 ## Lease Claiming Contract (Critical Concurrency Logic)
 

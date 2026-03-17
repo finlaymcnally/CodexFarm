@@ -22,6 +22,7 @@ This chunk defines two analytics surfaces:
 ## Row model
 
 One row is appended per `run_codex_exec(...)` call.
+Session-aware runs keep that same per-call row model, but now each row can also carry session attribution fields so callers can regroup turns by persistent Codex conversation.
 
 - `status`: `ok`, `failed`, or `timeout`
 - `exit_code`: Codex subprocess exit code (empty for timeout)
@@ -38,6 +39,7 @@ One row is appended per `run_codex_exec(...)` call.
 - `output_sha256`, `output_preview`, `output_preview_chars`, `output_preview_truncated`: output payload fingerprint and preview for caller-side quality analysis
 - `source`: caller path (`one`, `worker`, or `heads_up.learn`)
 - `pipeline_id`, `run_id`, `task_id`, `worker_id`, `input_path`: execution context when available
+- `runtime_mode`, `session_row_id`, `resume_key`, `session_task_index`, `session_turn_index`, `turn_kind`: session-aware attribution fields for `structured_loop_agentic_v1`
 - `heads_up_applied`, `heads_up_tip_count`, `heads_up_input_signature`: prompt-adaptation context when available
 - `heads_up_tip_ids_json`, `heads_up_tip_texts_json`, `heads_up_tip_scores_json`: concrete pass-forward Heads Up hints applied to this prompt
 - `attempt_index`, `lease_claim_index`, `execution_attempt_index`, `retry_context_applied`, `retry_previous_error`, `retry_previous_error_chars`, `retry_previous_error_sha256`: retry pass-forward context from previous task failures (`attempt_index` stays backward-compatible with lease-claim semantics)
@@ -79,6 +81,7 @@ Command behavior:
 - Reads telemetry CSV (same default as dashboard).
 - Applies caller filters and limit window.
 - Emits machine-readable summary, pattern clusters, recommendation categories (`prompt`, `input_data`, `output_schema`, `runtime`), and a schema-versioned tuning payload (`schema_version=2`).
+- When `--run-id` is set, summary also includes additive `session_summary` data sourced from SQLite `worker_sessions`.
 - `insights` section includes model/reasoning-effort breakdown, prompt-fingerprint performance, input failure hotspots, pass-forward effectiveness deltas, and Codex event-stream signals.
 - `tuning_playbook` section includes concrete caller actions grouped by `prompt_edits`, `input_prechecks`, `schema_edits`, `runtime_tuning`, and `model_tuning`.
 - When `--run-id` is set, report also includes terminal task errors from SQLite so schema-gate failures that occur after Codex subprocess success are visible.

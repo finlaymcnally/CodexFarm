@@ -37,6 +37,17 @@ class CodexExecResult:
     stdout_tail: str = ""
 
 
+@dataclass(frozen=True)
+class CodexSessionTurnResult:
+    ok: bool
+    exit_code: int
+    stderr_tail: str
+    stdout_tail: str = ""
+    events: tuple[dict[str, object], ...] = ()
+    thread_id: str | None = None
+    resume_key: str | None = None
+
+
 class CodexExecTimeoutError(TimeoutError):
     """Raised when codex exec exceeds timeout."""
 
@@ -185,6 +196,12 @@ _USAGE_LOG_FIELDS = (
     "task_id",
     "worker_id",
     "input_path",
+    "runtime_mode",
+    "session_row_id",
+    "resume_key",
+    "session_task_index",
+    "session_turn_index",
+    "turn_kind",
     "heads_up_applied",
     "heads_up_tip_count",
     "heads_up_input_signature",
@@ -1051,6 +1068,12 @@ def _log_codex_activity(
         "task_id": context.get("task_id"),
         "worker_id": context.get("worker_id"),
         "input_path": context.get("input_path"),
+        "runtime_mode": context.get("runtime_mode"),
+        "session_row_id": _as_int(context.get("session_row_id")),
+        "resume_key": context.get("resume_key"),
+        "session_task_index": _as_int(context.get("session_task_index")),
+        "session_turn_index": _as_int(context.get("session_turn_index")),
+        "turn_kind": context.get("turn_kind"),
         "heads_up_applied": context.get("heads_up_applied"),
         "heads_up_tip_count": context.get("heads_up_tip_count"),
         "heads_up_input_signature": context.get("heads_up_input_signature"),
@@ -1075,38 +1098,33 @@ def _log_codex_activity(
         return
 
 
-def run_codex_exec(
+def _build_codex_command(
     *,
+    command_kind: str,
     cd_dir: Path,
     prompt: str,
     model: str,
     sandbox: str,
     ask_for_approval: str,
     web_search: str,
-    output_schema: Path,
-    output_path: Path,
-    timeout_seconds: int,
-    output_schema_logical_path: Path | None = None,
-    reasoning_effort: str | None = None,
-    env_overrides: Mapping[str, str] | None = None,
-    usage_log_csv: Path | None = None,
-    usage_context: Mapping[str, object] | None = None,
-    trace_output_path: Path | None = None,
-) -> CodexExecResult:
-    """Run codex exec and atomically move output into place on success."""
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    started_at = datetime.now(UTC)
-    started_clock = time.perf_counter()
-
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        delete=False,
-        dir=output_path.parent,
-        prefix=f".{output_path.name}.",
-        suffix=".tmp",
-    ) as tmp:
-        temp_output_path = Path(tmp.name)
+    output_schema: Path | None,
+    output_last_message_path: Path,
+    reasoning_effort: str | None,
+    resume_key: str | None,
+) -> list[str]:
+    if command_kind == "resume":
+        if resume_key is None or not resume_key.strip():
+            raise ValueError("resume_key is required for codex exec resume")
+        return [
+            "codex",
+            "exec",
+            "resume",
+            resume_key.strip(),
+            "--output-last-message",
+            str(output_last_message_path),
+            "--json",
+            prompt,
+        ]
 
     cmd = [
         "codex",
@@ -1130,15 +1148,72 @@ def run_codex_exec(
                 f'model_reasoning_effort="{reasoning_effort}"',
             ]
         )
+    if output_schema is not None:
+        cmd.extend(
+            [
+                "--output-schema",
+                str(output_schema.resolve()),
+            ]
+        )
     cmd.extend(
         [
-            "--output-schema",
-            str(output_schema.resolve()),
             "--output-last-message",
-            str(temp_output_path),
+            str(output_last_message_path),
             "--json",
             prompt,
         ]
+    )
+    return cmd
+
+
+def _run_codex_command(
+    *,
+    command_kind: str,
+    cd_dir: Path,
+    prompt: str,
+    model: str,
+    sandbox: str,
+    ask_for_approval: str,
+    web_search: str,
+    output_schema: Path,
+    output_path: Path,
+    timeout_seconds: int,
+    command_label: str,
+    resume_key: str | None = None,
+    output_schema_logical_path: Path | None = None,
+    reasoning_effort: str | None = None,
+    env_overrides: Mapping[str, str] | None = None,
+    usage_log_csv: Path | None = None,
+    usage_context: Mapping[str, object] | None = None,
+    trace_output_path: Path | None = None,
+) -> CodexSessionTurnResult:
+    """Run one codex exec/exec resume turn and atomically move output into place on success."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    started_at = datetime.now(UTC)
+    started_clock = time.perf_counter()
+
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        delete=False,
+        dir=output_path.parent,
+        prefix=f".{output_path.name}.",
+        suffix=".tmp",
+    ) as tmp:
+        temp_output_path = Path(tmp.name)
+
+    cmd = _build_codex_command(
+        command_kind=command_kind,
+        cd_dir=cd_dir,
+        prompt=prompt,
+        model=model,
+        sandbox=sandbox,
+        ask_for_approval=ask_for_approval,
+        web_search=web_search,
+        output_schema=output_schema,
+        output_last_message_path=temp_output_path,
+        reasoning_effort=reasoning_effort,
+        resume_key=resume_key,
     )
 
     try:
@@ -1246,7 +1321,7 @@ def run_codex_exec(
             env_overrides=env_overrides,
         )
         raise CodexExecTimeoutError(
-            f"codex exec timed out after {timeout_seconds}s",
+            f"{command_label} timed out after {timeout_seconds}s",
             stdout_tail=timeout_stdout_tail,
             stderr_tail=timeout_stderr_tail,
         ) from exc
@@ -1287,28 +1362,37 @@ def run_codex_exec(
     if proc.returncode != 0 and not temp_has_payload:
         temp_output_path.unlink(missing_ok=True)
         status = "failed"
-        result = CodexExecResult(
+        result = CodexSessionTurnResult(
             ok=False,
             exit_code=proc.returncode,
             stderr_tail=stderr_tail,
             stdout_tail=stdout_tail,
+            events=tuple(events),
+            thread_id=thread_id or None,
+            resume_key=(resume_key or thread_id or None),
         )
     elif not temp_has_payload:
         temp_output_path.unlink(missing_ok=True)
         status = "failed"
-        result = CodexExecResult(
+        result = CodexSessionTurnResult(
             ok=False,
             exit_code=proc.returncode,
-            stderr_tail="codex exec exited 0 but produced no output file",
+            stderr_tail=f"{command_label} exited 0 but produced no output file",
             stdout_tail=stdout_tail,
+            events=tuple(events),
+            thread_id=thread_id or None,
+            resume_key=(resume_key or thread_id or None),
         )
     else:
         os.replace(temp_output_path, output_path)
-        result = CodexExecResult(
+        result = CodexSessionTurnResult(
             ok=True,
             exit_code=proc.returncode,
             stderr_tail=stderr_tail,
             stdout_tail=stdout_tail,
+            events=tuple(events),
+            thread_id=thread_id or None,
+            resume_key=(resume_key or thread_id or None),
         )
 
     finished_at = datetime.now(UTC)
@@ -1376,3 +1460,127 @@ def run_codex_exec(
         env_overrides=env_overrides,
     )
     return result
+
+
+def run_codex_exec(
+    *,
+    cd_dir: Path,
+    prompt: str,
+    model: str,
+    sandbox: str,
+    ask_for_approval: str,
+    web_search: str,
+    output_schema: Path,
+    output_path: Path,
+    timeout_seconds: int,
+    output_schema_logical_path: Path | None = None,
+    reasoning_effort: str | None = None,
+    env_overrides: Mapping[str, str] | None = None,
+    usage_log_csv: Path | None = None,
+    usage_context: Mapping[str, object] | None = None,
+    trace_output_path: Path | None = None,
+) -> CodexExecResult:
+    """Run codex exec and atomically move output into place on success."""
+    result = _run_codex_command(
+        command_kind="exec",
+        command_label="codex exec",
+        cd_dir=cd_dir,
+        prompt=prompt,
+        model=model,
+        sandbox=sandbox,
+        ask_for_approval=ask_for_approval,
+        web_search=web_search,
+        output_schema=output_schema,
+        output_path=output_path,
+        timeout_seconds=timeout_seconds,
+        output_schema_logical_path=output_schema_logical_path,
+        reasoning_effort=reasoning_effort,
+        env_overrides=env_overrides,
+        usage_log_csv=usage_log_csv,
+        usage_context=usage_context,
+        trace_output_path=trace_output_path,
+    )
+    return CodexExecResult(
+        ok=result.ok,
+        exit_code=result.exit_code,
+        stderr_tail=result.stderr_tail,
+        stdout_tail=result.stdout_tail,
+    )
+
+
+def start_codex_session(
+    *,
+    cd_dir: Path,
+    prompt: str,
+    model: str,
+    sandbox: str,
+    ask_for_approval: str,
+    web_search: str,
+    output_path: Path,
+    timeout_seconds: int,
+    output_schema_logical_path: Path | None = None,
+    reasoning_effort: str | None = None,
+    env_overrides: Mapping[str, str] | None = None,
+    usage_log_csv: Path | None = None,
+    usage_context: Mapping[str, object] | None = None,
+    trace_output_path: Path | None = None,
+) -> CodexSessionTurnResult:
+    return _run_codex_command(
+        command_kind="exec",
+        command_label="codex exec",
+        cd_dir=cd_dir,
+        prompt=prompt,
+        model=model,
+        sandbox=sandbox,
+        ask_for_approval=ask_for_approval,
+        web_search=web_search,
+        output_schema=None,
+        output_path=output_path,
+        timeout_seconds=timeout_seconds,
+        output_schema_logical_path=output_schema_logical_path,
+        reasoning_effort=reasoning_effort,
+        env_overrides=env_overrides,
+        usage_log_csv=usage_log_csv,
+        usage_context=usage_context,
+        trace_output_path=trace_output_path,
+    )
+
+
+def resume_codex_session(
+    *,
+    resume_key: str,
+    cd_dir: Path,
+    prompt: str,
+    model: str,
+    sandbox: str,
+    ask_for_approval: str,
+    web_search: str,
+    output_path: Path,
+    timeout_seconds: int,
+    output_schema_logical_path: Path | None = None,
+    reasoning_effort: str | None = None,
+    env_overrides: Mapping[str, str] | None = None,
+    usage_log_csv: Path | None = None,
+    usage_context: Mapping[str, object] | None = None,
+    trace_output_path: Path | None = None,
+) -> CodexSessionTurnResult:
+    return _run_codex_command(
+        command_kind="resume",
+        command_label="codex exec resume",
+        cd_dir=cd_dir,
+        prompt=prompt,
+        model=model,
+        sandbox=sandbox,
+        ask_for_approval=ask_for_approval,
+        web_search=web_search,
+        output_schema=None,
+        output_path=output_path,
+        timeout_seconds=timeout_seconds,
+        resume_key=resume_key,
+        output_schema_logical_path=output_schema_logical_path,
+        reasoning_effort=reasoning_effort,
+        env_overrides=env_overrides,
+        usage_log_csv=usage_log_csv,
+        usage_context=usage_context,
+        trace_output_path=trace_output_path,
+    )

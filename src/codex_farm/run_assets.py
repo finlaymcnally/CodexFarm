@@ -11,6 +11,7 @@ import shutil
 import uuid
 
 from .pipeline_spec import PipelineSpec
+from .runtime_modes import STRUCTURED_LOOP_AGENTIC_V1
 
 
 FROZEN_ASSETS_VERSION = 1
@@ -36,6 +37,7 @@ class FrozenRunAssetsManifest:
 
 @dataclass(frozen=True)
 class FrozenExecutionSpec:
+    runtime_mode: str
     pipeline_id: str
     description: str
     output_ext: str
@@ -51,6 +53,8 @@ class FrozenExecutionSpec:
     prompt_template_path: Path
     output_schema_path: Path
     logical_output_schema_source_path: Path
+    session_bootstrap_prompt_path: Path | None
+    session_task_turn_template_path: Path | None
 
 
 def _sha256_file(path: Path) -> str:
@@ -130,6 +134,20 @@ def _manifest_snapshot_files(manifest_payload: dict[str, object]) -> dict[str, s
         ),
         "output_schema_relpath": _string_field(files_raw, "output_schema_relpath", where="manifest.files"),
     }
+    raw_bootstrap = files_raw.get("session_bootstrap_prompt_relpath")
+    if raw_bootstrap is not None:
+        if not isinstance(raw_bootstrap, str) or not raw_bootstrap.strip():
+            raise FrozenRunAssetsError(
+                "Manifest session_bootstrap_prompt_relpath must be a non-empty string when present"
+            )
+        files["session_bootstrap_prompt_relpath"] = raw_bootstrap
+    raw_turn_template = files_raw.get("session_task_turn_template_relpath")
+    if raw_turn_template is not None:
+        if not isinstance(raw_turn_template, str) or not raw_turn_template.strip():
+            raise FrozenRunAssetsError(
+                "Manifest session_task_turn_template_relpath must be a non-empty string when present"
+            )
+        files["session_task_turn_template_relpath"] = raw_turn_template
     return files
 
 
@@ -149,6 +167,20 @@ def _manifest_hashes(manifest_payload: dict[str, object]) -> dict[str, str]:
         ),
         "output_schema_sha256": _string_field(hashes_raw, "output_schema_sha256", where="manifest.hashes"),
     }
+    raw_bootstrap = hashes_raw.get("session_bootstrap_prompt_sha256")
+    if raw_bootstrap is not None:
+        if not isinstance(raw_bootstrap, str) or not raw_bootstrap.strip():
+            raise FrozenRunAssetsError(
+                "Manifest session_bootstrap_prompt_sha256 must be a non-empty string when present"
+            )
+        hashes["session_bootstrap_prompt_sha256"] = raw_bootstrap
+    raw_turn_template = hashes_raw.get("session_task_turn_template_sha256")
+    if raw_turn_template is not None:
+        if not isinstance(raw_turn_template, str) or not raw_turn_template.strip():
+            raise FrozenRunAssetsError(
+                "Manifest session_task_turn_template_sha256 must be a non-empty string when present"
+            )
+        hashes["session_task_turn_template_sha256"] = raw_turn_template
     return hashes
 
 
@@ -157,9 +189,12 @@ def freeze_run_assets(
     run_id: str,
     data_dir: Path,
     pipeline: PipelineSpec,
+    runtime_mode: str,
     resolved_model: str,
     resolved_reasoning_effort: str | None,
     resolved_output_schema_path: Path,
+    session_bootstrap_prompt_text: str | None = None,
+    session_task_turn_template_text: str | None = None,
 ) -> dict[str, object]:
     """Write frozen execution assets for a run and return config_json metadata."""
     data_dir_resolved = data_dir.resolve()
@@ -190,18 +225,46 @@ def freeze_run_assets(
         "prompt_template_relpath": "prompt.template.txt",
         "output_schema_relpath": "output.schema.json",
     }
+    if runtime_mode == STRUCTURED_LOOP_AGENTIC_V1:
+        if session_bootstrap_prompt_text is None or session_task_turn_template_text is None:
+            raise FrozenRunAssetsError(
+                "Session runtime requires frozen bootstrap and task-turn prompt files."
+            )
+        files["session_bootstrap_prompt_relpath"] = "session.bootstrap.txt"
+        files["session_task_turn_template_relpath"] = "session.task-turn.txt"
     pipeline_source_copy_path = stage_snapshot_dir / files["pipeline_source_relpath"]
     effective_pipeline_path = stage_snapshot_dir / files["effective_pipeline_relpath"]
     prompt_template_copy_path = stage_snapshot_dir / files["prompt_template_relpath"]
     output_schema_copy_path = stage_snapshot_dir / files["output_schema_relpath"]
+    session_bootstrap_prompt_copy_path = (
+        stage_snapshot_dir / files["session_bootstrap_prompt_relpath"]
+        if "session_bootstrap_prompt_relpath" in files
+        else None
+    )
+    session_task_turn_template_copy_path = (
+        stage_snapshot_dir / files["session_task_turn_template_relpath"]
+        if "session_task_turn_template_relpath" in files
+        else None
+    )
     manifest_path = stage_snapshot_dir / "manifest.json"
 
     try:
         shutil.copyfile(pipeline_source_path, pipeline_source_copy_path)
         shutil.copyfile(prompt_source_path, prompt_template_copy_path)
         shutil.copyfile(output_schema_source_path, output_schema_copy_path)
+        if session_bootstrap_prompt_copy_path is not None:
+            session_bootstrap_prompt_copy_path.write_text(
+                session_bootstrap_prompt_text or "",
+                encoding="utf-8",
+            )
+        if session_task_turn_template_copy_path is not None:
+            session_task_turn_template_copy_path.write_text(
+                session_task_turn_template_text or "",
+                encoding="utf-8",
+            )
 
         effective_pipeline = {
+            "runtime_mode": runtime_mode,
             "pipeline_id": pipeline.pipeline_id,
             "description": pipeline.description,
             "output_ext": pipeline.output_ext,
@@ -217,6 +280,10 @@ def freeze_run_assets(
             "prompt_template_relpath": files["prompt_template_relpath"],
             "output_schema_relpath": files["output_schema_relpath"],
             "logical_output_schema_source_path": str(output_schema_source_path),
+            "session_bootstrap_prompt_relpath": files.get("session_bootstrap_prompt_relpath"),
+            "session_task_turn_template_relpath": files.get(
+                "session_task_turn_template_relpath"
+            ),
         }
         _json_write(effective_pipeline_path, effective_pipeline)
 
@@ -226,6 +293,14 @@ def freeze_run_assets(
             "prompt_template_sha256": _sha256_file(prompt_template_copy_path),
             "output_schema_sha256": _sha256_file(output_schema_copy_path),
         }
+        if session_bootstrap_prompt_copy_path is not None:
+            hashes["session_bootstrap_prompt_sha256"] = _sha256_file(
+                session_bootstrap_prompt_copy_path
+            )
+        if session_task_turn_template_copy_path is not None:
+            hashes["session_task_turn_template_sha256"] = _sha256_file(
+                session_task_turn_template_copy_path
+            )
         manifest = {
             "schema_version": FROZEN_ASSETS_VERSION,
             "run_id": run_id,
@@ -335,6 +410,16 @@ def load_frozen_run_assets(
     effective_pipeline_path = (snapshot_dir / file_relpaths["effective_pipeline_relpath"]).resolve()
     prompt_template_path = (snapshot_dir / file_relpaths["prompt_template_relpath"]).resolve()
     output_schema_path = (snapshot_dir / file_relpaths["output_schema_relpath"]).resolve()
+    session_bootstrap_prompt_path = (
+        (snapshot_dir / file_relpaths["session_bootstrap_prompt_relpath"]).resolve()
+        if "session_bootstrap_prompt_relpath" in file_relpaths
+        else None
+    )
+    session_task_turn_template_path = (
+        (snapshot_dir / file_relpaths["session_task_turn_template_relpath"]).resolve()
+        if "session_task_turn_template_relpath" in file_relpaths
+        else None
+    )
 
     file_to_hash_key = {
         pipeline_source_path: "pipeline_source_sha256",
@@ -342,6 +427,10 @@ def load_frozen_run_assets(
         prompt_template_path: "prompt_template_sha256",
         output_schema_path: "output_schema_sha256",
     }
+    if session_bootstrap_prompt_path is not None:
+        file_to_hash_key[session_bootstrap_prompt_path] = "session_bootstrap_prompt_sha256"
+    if session_task_turn_template_path is not None:
+        file_to_hash_key[session_task_turn_template_path] = "session_task_turn_template_sha256"
     for path, hash_key in file_to_hash_key.items():
         if not path.exists() or not path.is_file():
             raise FrozenRunAssetsError(
@@ -403,6 +492,10 @@ def load_frozen_run_assets(
         )
 
     logical_output_schema_source_path = Path(logical_output_schema_source_path_raw).expanduser().resolve()
+    runtime_mode = (
+        _optional_string_field(effective_pipeline, "runtime_mode")
+        or "classic_task_farm_v1"
+    )
 
     manifest = FrozenRunAssetsManifest(
         schema_version=manifest_schema_version,
@@ -418,6 +511,7 @@ def load_frozen_run_assets(
     )
 
     execution_spec = FrozenExecutionSpec(
+        runtime_mode=runtime_mode,
         pipeline_id=manifest_pipeline_id,
         description=_string_field(effective_pipeline, "description", where="effective_pipeline"),
         output_ext=_string_field(effective_pipeline, "output_ext", where="effective_pipeline"),
@@ -437,5 +531,7 @@ def load_frozen_run_assets(
         prompt_template_path=prompt_template_path,
         output_schema_path=output_schema_path,
         logical_output_schema_source_path=logical_output_schema_source_path,
+        session_bootstrap_prompt_path=session_bootstrap_prompt_path,
+        session_task_turn_template_path=session_task_turn_template_path,
     )
     return manifest, execution_spec

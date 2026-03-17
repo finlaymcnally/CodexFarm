@@ -364,6 +364,7 @@ Behavior:
 - Optional `--incremental` enables planning-time reuse from a compatible prior run.
 - Optional `--incremental-from <run_id>` forces one source run and fails if it is missing, non-terminal, or incompatible.
 - Persists run config JSON with absolute paths and `farm_root`.
+- Persists explicit `runtime_mode` (`classic_task_farm_v1` default, `structured_loop_agentic_v1` opt-in).
 - Adds `workspace_root` only when user passed `--workspace-root`.
 - Adds `codex_home_path` when CLI resolved one from `--codex-home` or `CODEX_FARM_CODEX_HOME_<PROFILE>`.
 - Adds `codex_model` only when user passed `--model`.
@@ -373,6 +374,7 @@ Behavior:
 - Adds `recipeimport_benchmark_debug` only when user passed `--recipeimport-benchmark-debug`.
 - When `recipeimport_benchmark_mode=line_label_v1` is set, run creation dispatches to pipeline `recipeimport.benchmark.line_label.v1`.
 - Always persists `heads_up_enabled` and `heads_up_max_tips` for worker determinism.
+- Always persists session reset defaults (`session_task_budget`, `max_turns_per_task`, `session_reset_on_error`) so session-aware runs stay reproducible.
 - Always persists `incremental_enabled` and `incremental_source_run_id` in run config for reproducibility.
 - Computes and stores `runs.execution_fingerprint` and can pre-materialize reused outputs before worker start.
 
@@ -389,6 +391,7 @@ Output:
   "output_dir": "absolute path",
   "total": 1,
   "farm_root": "absolute path",
+  "runtime_mode": "classic_task_farm_v1|structured_loop_agentic_v1",
   "workspace_root": "absolute path or null",
   "codex_execution_context": "project|scratch",
   "codex_home_path": "absolute path or null",
@@ -455,6 +458,7 @@ Behavior:
 - Includes the same run status/count fields as `run status`.
 - Adds `progress.completed`, `progress.remaining`, and `progress.percent_complete`.
 - Adds bounded `running_tasks` and `recent_errors` arrays for active-state UI rendering.
+- Adds additive `session_summary` counters so callers can see whether one active worker session is serving multiple tasks.
 - `--watch` mode keeps polling until terminal run state and emits one snapshot per poll.
 
 Output:
@@ -477,10 +481,22 @@ Output:
     "total": 0
   },
   "snapshot_at_utc": "ISO-8601 timestamp",
+  "runtime_mode": "classic_task_farm_v1|structured_loop_agentic_v1",
   "progress": {
     "completed": 0,
     "remaining": 0,
     "percent_complete": 0.0
+  },
+  "session_summary": {
+    "active_sessions": 0,
+    "sessions_started": 0,
+    "sessions_finished": 0,
+    "current_session_task_count": 0,
+    "session_count": 0,
+    "fresh_session_count": 0,
+    "session_turn_count_total": 0,
+    "session_failures": 0,
+    "tasks_per_session_summary": {}
   },
   "running_tasks": [],
   "recent_errors": []
@@ -502,6 +518,7 @@ Output:
 - JSON mode: array of task rows with:
 - `input_path`, `rel_output_path`, `status`, `attempts`, `lease_claims`, `execution_attempts`, `last_heartbeat_at`, `error`, `output_path`
 - additive reuse fields: `reused`, `reused_from_run_id`, `reused_from_task_id`
+- additive session fields: `session_row_id`, `session_task_index`, `session_turn_index`, `fresh_session_started`
 - text mode:
 - `No tasks found.` when empty
 - otherwise one line per task + optional `[reused]` marker + optional indented error line.
@@ -597,6 +614,7 @@ Behavior:
 - Optional `--root` is validated only when passed.
 - Runs execution precheck by default (`codex login status` plus a non-interactive `codex exec` smoke check) before leasing tasks; bypass with `--no-login-precheck` or `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
 - `worker --run-id <id>` reads that run first and prechecks its persisted `codex_home_path`; unscoped worker precheck stays generic.
+- When the scoped run persisted `runtime_mode=structured_loop_agentic_v1`, CLI dispatches to the session-aware worker loop instead of the classic per-task loop.
 - If `--worker-id` not provided, generates `worker-<8 hex chars>`.
 - Calls `worker_loop(...)` and exits with that exact code.
 
@@ -616,6 +634,7 @@ Behavior:
 - Resolves optional `--codex-home` override or profile-derived `CODEX_FARM_CODEX_HOME_<PROFILE>`.
 - Resolves optional output-schema override (`--output-schema`).
 - Resolves optional recipeimport benchmark mode (`--recipeimport-benchmark-mode line_label_v1`) and debug capture toggle (`--recipeimport-benchmark-debug`).
+- Resolves `--runtime-mode` and persists it with the run.
 - When benchmark mode is enabled, process dispatches to pipeline `recipeimport.benchmark.line_label.v1`.
 - Runs execution precheck by default (`codex login status` plus a non-interactive `codex exec` smoke check) before run creation; bypass with `--no-login-precheck` or `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.
 - The precheck receives the same resolved `CODEX_HOME` override the real run will use.
@@ -625,7 +644,8 @@ Behavior:
 - if `--glob` provided and non-empty: use it.
 - if omitted/empty string: use pipeline `input_glob_default`.
 - Creates run+tasks (same internal path as `run create`).
-- Starts `N` worker threads with deterministic IDs `worker-1...worker-N`.
+- `classic_task_farm_v1` starts `N` classic worker threads with deterministic IDs `worker-1...worker-N`.
+- `structured_loop_agentic_v1` defaults to one worker when `--workers` is omitted and rejects `--workers > 1`; that one worker runs the session-aware loop.
 - Polls status every second and prints progress.
 - If a worker hits codex rate-limit (`429` / rate-limit text), it requeues the interrupted task, stores run-level cooldown state, and temporarily reduces effective concurrency.
 - Temporary throttling auto-recovers in the same invocation; persistent throttling eventually exits non-zero with queued work preserved for resume.
@@ -665,6 +685,8 @@ Output contract:
   "input_dir": "absolute path",
   "output_dir": "absolute path",
   "farm_root": "absolute path",
+  "runtime_mode": "classic_task_farm_v1|structured_loop_agentic_v1",
+  "effective_workers": 1,
   "workspace_root": "absolute path or null",
   "codex_execution_context": "project|scratch",
   "codex_home_path": "absolute path or null",
@@ -678,6 +700,11 @@ Output contract:
   "heads_up_tips_applied": 0,
   "heads_up_tips_added": 0,
   "progress_events_enabled": false,
+  "session_count": 0,
+  "fresh_session_count": 0,
+  "tasks_per_session_summary": {},
+  "session_turn_count_total": 0,
+  "session_failures": 0,
   "incremental": {
     "enabled": true,
     "source_run_id": "string or null",

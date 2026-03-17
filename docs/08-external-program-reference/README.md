@@ -27,6 +27,8 @@ Use this folder when another app or script drives `codex-farm` via CLI and JSON 
   - `codex-farm models list --json` is the only supported caller contract for menu population.
   - rows are cache-backed when available; fallback row (`gpt-5.3-codex-spark`) is always present when cache metadata is missing.
 - Execution overrides:
+  - `run create`, `process`, and `go` accept `--runtime-mode`; supported values are `classic_task_farm_v1` and `structured_loop_agentic_v1`.
+  - `structured_loop_agentic_v1` defaults to one worker when `--workers` is omitted and rejects `--workers > 1`.
   - `--model` and effort aliases (`--effort`, `--reasoning-effort`, `--thinking-effort`, plus codex-prefixed forms) are accepted by `one`, `run create`, `process`, and `go`.
   - run-based commands persist explicit overrides so retries/resumes keep the same model/effort contract.
   - `--codex-home` is accepted by `one`, `run create`, `process`, and `go`; run-based commands persist the resolved absolute `codex_home_path`.
@@ -46,6 +48,7 @@ Use this folder when another app or script drives `codex-farm` via CLI and JSON 
   - `run tasks --json` exposes reuse provenance per task (`reused`, `reused_from_run_id`, `reused_from_task_id`).
 - Machine-safe outputs:
 - execution commands (`one`, `worker`, `process`, `go`) run execution precheck by default (`codex login status` plus a non-interactive `codex exec` smoke check).
+  - `run create --json` and `process --json` include additive `runtime_mode`; `process --json` also includes `effective_workers` plus session counters (`session_count`, `fresh_session_count`, `tasks_per_session_summary`, `session_turn_count_total`, `session_failures`).
   - `run create --json` and `process --json` include additive `codex_execution_context` and `codex_home_path` fields.
   - recipe-style pipelines may run from scratch `--cd` directories under `<data_dir>/execution_contexts/` even when `codex_cd_mode` or `workspace_root` would otherwise point at the pack root.
   - callers can bypass precheck intentionally with `--no-login-precheck` or env `CODEX_FARM_SKIP_LOGIN_PRECHECK=1`.

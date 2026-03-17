@@ -116,6 +116,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             output_path TEXT,
             reused_from_run_id TEXT,
             reused_from_task_id TEXT,
+            session_row_id INTEGER REFERENCES worker_sessions(session_row_id) ON DELETE SET NULL,
+            session_task_index INTEGER,
+            session_turn_index INTEGER,
+            fresh_session_started INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -136,6 +140,27 @@ def init_db(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS worker_sessions (
+            session_row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+            worker_id TEXT NOT NULL,
+            runtime_mode TEXT NOT NULL,
+            resume_key TEXT,
+            thread_id TEXT,
+            status TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            turn_count INTEGER NOT NULL DEFAULT 0,
+            task_count INTEGER NOT NULL DEFAULT 0,
+            last_task_id TEXT,
+            end_reason TEXT,
+            codex_home_path TEXT,
+            cd_dir TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_worker_sessions_run_started
+            ON worker_sessions(run_id, started_at, session_row_id);
 
         CREATE TABLE IF NOT EXISTS task_forensics (
             forensics_id TEXT PRIMARY KEY,
@@ -241,6 +266,30 @@ def init_db(conn: sqlite3.Connection) -> None:
         table_name="tasks",
         column_name="rate_limit_count",
         column_ddl="rate_limit_count INTEGER NOT NULL DEFAULT 0",
+    )
+    _ensure_column(
+        conn,
+        table_name="tasks",
+        column_name="session_row_id",
+        column_ddl="session_row_id INTEGER REFERENCES worker_sessions(session_row_id) ON DELETE SET NULL",
+    )
+    _ensure_column(
+        conn,
+        table_name="tasks",
+        column_name="session_task_index",
+        column_ddl="session_task_index INTEGER",
+    )
+    _ensure_column(
+        conn,
+        table_name="tasks",
+        column_name="session_turn_index",
+        column_ddl="session_turn_index INTEGER",
+    )
+    _ensure_column(
+        conn,
+        table_name="tasks",
+        column_name="fresh_session_started",
+        column_ddl="fresh_session_started INTEGER NOT NULL DEFAULT 0",
     )
     conn.execute(
         """
@@ -363,6 +412,10 @@ def insert_planned_tasks_for_run(
             str | None,
             str | None,
             str | None,
+            int | None,
+            int | None,
+            int | None,
+            int,
             str,
             str,
         ]
@@ -392,6 +445,10 @@ def insert_planned_tasks_for_run(
                 output_path,
                 planned.reused_from_run_id,
                 planned.reused_from_task_id,
+                None,
+                None,
+                None,
+                0,
                 now,
                 now,
             )
@@ -416,9 +473,13 @@ def insert_planned_tasks_for_run(
                 output_path,
                 reused_from_run_id,
                 reused_from_task_id,
+                session_row_id,
+                session_task_index,
+                session_turn_index,
+                fresh_session_started,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -440,6 +501,234 @@ def get_run(conn: sqlite3.Connection, run_id: str) -> dict:
     if row is None:
         raise KeyError(f"Run not found: {run_id}")
     return dict(row)
+
+
+def create_worker_session(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    worker_id: str,
+    runtime_mode: str,
+    status: str,
+    codex_home_path: str | None,
+    cd_dir: str | None,
+    commit: bool = True,
+) -> int:
+    now = _now_iso()
+    cursor = conn.execute(
+        """
+        INSERT INTO worker_sessions (
+            run_id,
+            worker_id,
+            runtime_mode,
+            resume_key,
+            thread_id,
+            status,
+            started_at,
+            finished_at,
+            turn_count,
+            task_count,
+            last_task_id,
+            end_reason,
+            codex_home_path,
+            cd_dir
+        ) VALUES (?, ?, ?, NULL, NULL, ?, ?, NULL, 0, 0, NULL, NULL, ?, ?)
+        """,
+        (
+            run_id,
+            worker_id,
+            runtime_mode,
+            status,
+            now,
+            codex_home_path,
+            cd_dir,
+        ),
+    )
+    if commit:
+        conn.commit()
+    return int(cursor.lastrowid)
+
+
+def update_worker_session(
+    conn: sqlite3.Connection,
+    *,
+    session_row_id: int,
+    resume_key: str | None = None,
+    thread_id: str | None = None,
+    status: str | None = None,
+    turn_count: int | None = None,
+    task_count: int | None = None,
+    last_task_id: str | None = None,
+    end_reason: str | None = None,
+    finished_at: str | None = None,
+    commit: bool = True,
+) -> bool:
+    updates: list[str] = []
+    params: list[object] = []
+    if resume_key is not None:
+        updates.append("resume_key = ?")
+        params.append(resume_key)
+    if thread_id is not None:
+        updates.append("thread_id = ?")
+        params.append(thread_id)
+    if status is not None:
+        updates.append("status = ?")
+        params.append(status)
+    if turn_count is not None:
+        updates.append("turn_count = ?")
+        params.append(turn_count)
+    if task_count is not None:
+        updates.append("task_count = ?")
+        params.append(task_count)
+    if last_task_id is not None:
+        updates.append("last_task_id = ?")
+        params.append(last_task_id)
+    if end_reason is not None:
+        updates.append("end_reason = ?")
+        params.append(end_reason)
+    if finished_at is not None:
+        updates.append("finished_at = ?")
+        params.append(finished_at)
+    if not updates:
+        return True
+    params.append(session_row_id)
+    cursor = conn.execute(
+        f"""
+        UPDATE worker_sessions
+        SET {", ".join(updates)}
+        WHERE session_row_id = ?
+        """,
+        tuple(params),
+    )
+    if commit:
+        conn.commit()
+    return cursor.rowcount == 1
+
+
+def finish_worker_session(
+    conn: sqlite3.Connection,
+    *,
+    session_row_id: int,
+    status: str,
+    end_reason: str,
+    resume_key: str | None = None,
+    thread_id: str | None = None,
+    turn_count: int | None = None,
+    task_count: int | None = None,
+    last_task_id: str | None = None,
+    commit: bool = True,
+) -> bool:
+    return update_worker_session(
+        conn,
+        session_row_id=session_row_id,
+        resume_key=resume_key,
+        thread_id=thread_id,
+        status=status,
+        turn_count=turn_count,
+        task_count=task_count,
+        last_task_id=last_task_id,
+        end_reason=end_reason,
+        finished_at=_now_iso(),
+        commit=commit,
+    )
+
+
+def link_task_to_worker_session(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    session_row_id: int,
+    session_task_index: int,
+    session_turn_index: int,
+    fresh_session_started: bool,
+    lease_token: str | None = None,
+    commit: bool = True,
+) -> bool:
+    now = _now_iso()
+    where_sql, where_params = _lease_guard_predicate(task_id=task_id, lease_token=lease_token)
+    cursor = conn.execute(
+        f"""
+        UPDATE tasks
+        SET session_row_id = ?,
+            session_task_index = ?,
+            session_turn_index = ?,
+            fresh_session_started = ?,
+            updated_at = ?
+        WHERE {where_sql}
+        """,
+        (
+            session_row_id,
+            session_task_index,
+            session_turn_index,
+            1 if fresh_session_started else 0,
+            now,
+            *where_params,
+        ),
+    )
+    if commit:
+        conn.commit()
+    return cursor.rowcount == 1
+
+
+def list_worker_sessions_for_run(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM worker_sessions
+        WHERE run_id = ?
+        ORDER BY session_row_id ASC
+        """,
+        (run_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def summarize_worker_sessions_for_run(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+) -> dict[str, object]:
+    sessions = list_worker_sessions_for_run(conn, run_id=run_id)
+    session_count = len(sessions)
+    fresh_session_count = session_count
+    session_turn_count_total = sum(int(row.get("turn_count") or 0) for row in sessions)
+    session_failures = sum(
+        1
+        for row in sessions
+        if str(row.get("status") or "").strip().lower() not in {"finished", "completed", "running"}
+    )
+    active_sessions = sum(
+        1 for row in sessions if str(row.get("status") or "").strip().lower() == "running"
+    )
+    sessions_started = session_count
+    sessions_finished = sum(1 for row in sessions if row.get("finished_at"))
+    task_counts = [int(row.get("task_count") or 0) for row in sessions]
+    tasks_per_session_summary = {
+        "min": min(task_counts) if task_counts else 0,
+        "max": max(task_counts) if task_counts else 0,
+        "avg": round(sum(task_counts) / len(task_counts), 2) if task_counts else 0.0,
+        "values": task_counts,
+    }
+    current_session_task_count = max(
+        (int(row.get("task_count") or 0) for row in sessions if row.get("status") == "running"),
+        default=0,
+    )
+    return {
+        "session_count": session_count,
+        "fresh_session_count": fresh_session_count,
+        "session_turn_count_total": session_turn_count_total,
+        "session_failures": session_failures,
+        "active_sessions": active_sessions,
+        "sessions_started": sessions_started,
+        "sessions_finished": sessions_finished,
+        "current_session_task_count": current_session_task_count,
+        "tasks_per_session_summary": tasks_per_session_summary,
+        "sessions": sessions,
+    }
 
 
 def find_latest_compatible_terminal_run(
@@ -1236,7 +1525,11 @@ def list_tasks_for_run(
             error,
             output_path,
             reused_from_run_id,
-            reused_from_task_id
+            reused_from_task_id,
+            session_row_id,
+            session_task_index,
+            session_turn_index,
+            fresh_session_started
         FROM tasks
         WHERE run_id = ?
     """
@@ -1277,7 +1570,11 @@ def list_running_tasks_snapshot(
             leased_by,
             lease_until,
             last_heartbeat_at,
-            updated_at
+            updated_at,
+            session_row_id,
+            session_task_index,
+            session_turn_index,
+            fresh_session_started
         FROM tasks
         WHERE run_id = ? AND status = 'running'
         ORDER BY COALESCE(last_heartbeat_at, updated_at) DESC, input_path ASC
@@ -1308,7 +1605,11 @@ def list_recent_error_tasks_snapshot(
             attempts AS lease_claims,
             execution_attempts,
             error,
-            updated_at
+            updated_at,
+            session_row_id,
+            session_task_index,
+            session_turn_index,
+            fresh_session_started
         FROM tasks
         WHERE run_id = ? AND status = 'error'
         ORDER BY updated_at DESC, input_path ASC
@@ -1333,7 +1634,11 @@ def list_error_tasks(conn: sqlite3.Connection, run_id: str) -> list[dict]:
             error,
             leased_by,
             lease_until,
-            updated_at
+            updated_at,
+            session_row_id,
+            session_task_index,
+            session_turn_index,
+            fresh_session_started
         FROM tasks
         WHERE run_id = ? AND status = 'error'
         ORDER BY input_path ASC

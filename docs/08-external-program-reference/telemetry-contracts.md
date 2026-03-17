@@ -19,6 +19,7 @@ Preferred caller API (instead of parsing CSV directly):
 ## Core IDs for joins
 
 - `run_id`, `task_id`, `worker_id`, `pipeline_id`, `source`, `input_path`
+- additive session join fields: `runtime_mode`, `session_row_id`, `resume_key`, `session_task_index`, `session_turn_index`
 - `attempt_index` (legacy lease-claim attempt index; kept for compatibility)
 - `lease_claim_index` (explicit lease-claim index)
 - `execution_attempt_index` (explicit real execution-start index)
@@ -85,6 +86,7 @@ The report includes:
 - `schema_version`: currently `2`.
 - `summary`: status counts, retry/heads-up/rate-limit totals, duration+token aggregates.
   - Includes additive reasoning-token aggregates: `tokens_reasoning_total`, `tokens_reasoning_avg_per_call`.
+  - Includes additive `session_summary` when `--run-id` is provided.
 - `failure_patterns`: grouped failure categories, schema paths/issue types, repeated retry errors.
 - `heads_up_patterns`: per-tip effectiveness rows.
 - `insights`: higher-level breakdowns for caller automation:

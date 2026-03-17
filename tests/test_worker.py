@@ -25,6 +25,7 @@ import codex_farm.lease_heartbeat as lease_heartbeat
 from codex_farm.paths import find_repo_root
 from codex_farm.pipeline_spec import load_pipelines
 from codex_farm.run_assets import freeze_run_assets
+from codex_farm.runtime_modes import CLASSIC_TASK_FARM_V1
 from codex_farm.worker import worker_loop
 
 
@@ -1819,6 +1820,7 @@ def test_worker_uses_frozen_prompt_after_template_edit(
         run_id=run_id,
         data_dir=data_dir,
         pipeline=spec,
+        runtime_mode=CLASSIC_TASK_FARM_V1,
         resolved_model=spec.codex_model,
         resolved_reasoning_effort=spec.codex_reasoning_effort,
         resolved_output_schema_path=spec.output_schema_path,
@@ -1920,6 +1922,7 @@ def test_worker_uses_frozen_schema_after_override_edit(
         run_id=run_id,
         data_dir=data_dir,
         pipeline=spec,
+        runtime_mode=CLASSIC_TASK_FARM_V1,
         resolved_model=spec.codex_model,
         resolved_reasoning_effort=spec.codex_reasoning_effort,
         resolved_output_schema_path=override_schema,
@@ -2026,6 +2029,7 @@ def test_worker_uses_frozen_pipeline_settings_after_pipeline_json_edit(
         run_id=run_id,
         data_dir=data_dir,
         pipeline=spec,
+        runtime_mode=CLASSIC_TASK_FARM_V1,
         resolved_model=spec.codex_model,
         resolved_reasoning_effort=spec.codex_reasoning_effort,
         resolved_output_schema_path=spec.output_schema_path,
@@ -2114,6 +2118,7 @@ def test_worker_rejects_corrupt_frozen_assets_without_live_fallback(
         run_id=run_id,
         data_dir=data_dir,
         pipeline=spec,
+        runtime_mode=CLASSIC_TASK_FARM_V1,
         resolved_model=spec.codex_model,
         resolved_reasoning_effort=spec.codex_reasoning_effort,
         resolved_output_schema_path=spec.output_schema_path,

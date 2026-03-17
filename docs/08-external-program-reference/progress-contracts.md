@@ -58,6 +58,8 @@ Common event fields:
 - `schema_version` (currently `1`)
 - `emitted_at_utc`
 - run snapshot payload fields (`run_id`, `status`, `counts`, `progress`, task snippets)
+- additive `runtime_mode`
+- additive `session_summary` object with `active_sessions`, `sessions_started`, `sessions_finished`, `current_session_task_count`, `session_count`, `fresh_session_count`, `session_turn_count_total`, `session_failures`, and `tasks_per_session_summary`
 
 ## Integration guidance
 

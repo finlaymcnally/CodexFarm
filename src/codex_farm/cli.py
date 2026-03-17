@@ -42,6 +42,7 @@ from .db import (
     open_db,
     requeue_error_tasks_for_run,
     run_status,
+    summarize_worker_sessions_for_run,
     set_run_control_state,
 )
 from .doctor import run_codex_execution_checks, run_doctor_checks
@@ -72,6 +73,16 @@ from .pipeline_spec import (
     render_prompt_template,
 )
 from .run_assets import cleanup_frozen_run_assets, freeze_run_assets
+from .runtime_modes import (
+    DEFAULT_RUNTIME_MODE,
+    RUNTIME_MODE_VALUES,
+    default_session_runtime_config,
+    is_session_runtime,
+    normalize_runtime_mode,
+    resolve_effective_workers,
+    session_bootstrap_prompt,
+    session_task_turn_template,
+)
 from .schema_utils import SchemaValidationError, validate_json_file_against_schema
 from .telemetry_report import build_telemetry_report, read_telemetry_rows
 from .worker import worker_loop
@@ -84,6 +95,7 @@ RECIPEIMPORT_BENCHMARK_MODE_PIPELINE = {
     "line_label_v1": "recipeimport.benchmark.line_label.v1",
 }
 TELEMETRY_STATUS_VALUES = ("ok", "failed", "timeout", "other")
+RUNTIME_MODE_HELP = ", ".join(RUNTIME_MODE_VALUES)
 PROGRESS_EVENT_PREFIX = "__codex_farm_progress__ "
 TERMINAL_RUN_STATUSES = {"done", "error", "canceled"}
 LOGIN_PRECHECK_SKIP_ENV = "CODEX_FARM_SKIP_LOGIN_PRECHECK"
@@ -260,6 +272,27 @@ def _resolve_reasoning_effort_override_or_die(
     return normalized
 
 
+def _resolve_runtime_mode_or_die(runtime_mode: str | None) -> str:
+    try:
+        return normalize_runtime_mode(runtime_mode)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def _resolve_effective_workers_or_die(
+    *,
+    runtime_mode: str,
+    workers: int | None,
+) -> int:
+    try:
+        return resolve_effective_workers(
+            runtime_mode=runtime_mode,
+            requested_workers=workers,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
 def _resolve_telemetry_status_filter_or_die(value: str | None) -> str | None:
     if value is None:
         return None
@@ -360,6 +393,7 @@ def _create_run_for_paths(
     glob_pattern: str,
     data_dir: Path,
     config: dict,
+    runtime_mode: str,
     resolved_model: str,
     resolved_reasoning_effort: str | None,
     resolved_output_schema_path: Path,
@@ -379,9 +413,16 @@ def _create_run_for_paths(
         run_id=run_id,
         data_dir=data_dir,
         pipeline=pipeline,
+        runtime_mode=runtime_mode,
         resolved_model=resolved_model,
         resolved_reasoning_effort=resolved_reasoning_effort,
         resolved_output_schema_path=resolved_output_schema_path,
+        session_bootstrap_prompt_text=(
+            session_bootstrap_prompt() if is_session_runtime(runtime_mode) else None
+        ),
+        session_task_turn_template_text=(
+            session_task_turn_template() if is_session_runtime(runtime_mode) else None
+        ),
     )
     config_with_frozen_assets = dict(config)
     config_with_frozen_assets["frozen_assets"] = frozen_assets_config
@@ -464,6 +505,7 @@ def _run_workers(
     max_attempts: int,
     poll_seconds: float,
     farm_root: Path,
+    runtime_mode: str,
     json_output: bool,
     progress_callback: Callable[[dict[str, object]], None] | None = None,
     progress_max_running_tasks: int = 8,
@@ -473,6 +515,12 @@ def _run_workers(
     init_db(status_conn)
     stop_event = threading.Event()
     warning_lock = threading.Lock()
+    if is_session_runtime(runtime_mode):
+        from .session_runtime import worker_session_loop
+
+        worker_target = worker_session_loop
+    else:
+        worker_target = worker_loop
 
     def emit_warning(message: str) -> None:
         with warning_lock:
@@ -481,7 +529,7 @@ def _run_workers(
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [
             pool.submit(
-                worker_loop,
+                worker_target,
                 data_dir=data_dir,
                 worker_id=f"worker-{idx + 1}",
                 run_id=run_id,
@@ -607,6 +655,9 @@ def _run_progress_payload(
     max_recent_errors: int = 5,
 ) -> dict[str, object]:
     resolved_status = status or run_status(conn, run_id=run_id)
+    run_row = get_run(conn, run_id)
+    run_config = _parse_json_object(run_row.get("config_json"))
+    session_summary = summarize_worker_sessions_for_run(conn, run_id=run_id)
     counts = _counts_payload(resolved_status)
     completed = int(counts["done"]) + int(counts["error"]) + int(counts["canceled"])
     total = int(counts["total"])
@@ -626,6 +677,7 @@ def _run_progress_payload(
 
     return {
         **_status_payload(resolved_status),
+        "runtime_mode": str(run_config.get("runtime_mode") or DEFAULT_RUNTIME_MODE),
         "snapshot_at_utc": _utc_now_iso(),
         "progress": {
             "completed": completed,
@@ -634,6 +686,17 @@ def _run_progress_payload(
         },
         "running_tasks": running_tasks,
         "recent_errors": recent_errors,
+        "session_summary": {
+            "active_sessions": session_summary["active_sessions"],
+            "sessions_started": session_summary["sessions_started"],
+            "sessions_finished": session_summary["sessions_finished"],
+            "current_session_task_count": session_summary["current_session_task_count"],
+            "session_count": session_summary["session_count"],
+            "fresh_session_count": session_summary["fresh_session_count"],
+            "session_turn_count_total": session_summary["session_turn_count_total"],
+            "session_failures": session_summary["session_failures"],
+            "tasks_per_session_summary": session_summary["tasks_per_session_summary"],
+        },
     }
 
 
@@ -799,6 +862,7 @@ def _build_telemetry_report_payload(
     rows, warnings = read_telemetry_rows(resolved_csv)
 
     terminal_errors: list[str] = []
+    session_summary: dict[str, object] | None = None
     if run_id is not None:
         conn = open_db(db_path_for_data_dir(resolved_data_dir))
         init_db(conn)
@@ -808,6 +872,7 @@ def _build_telemetry_report_payload(
             for task in terminal_tasks
             if str(task.get("error", "")).strip()
         ]
+        session_summary = summarize_worker_sessions_for_run(conn, run_id=run_id)
 
     return build_telemetry_report(
         rows,
@@ -818,6 +883,7 @@ def _build_telemetry_report_payload(
         limit=limit,
         recommendations_limit=recommendations_limit,
         terminal_errors=terminal_errors,
+        session_summary=session_summary,
         warnings=warnings,
     )
 
@@ -1686,6 +1752,11 @@ def run_create_command(
             "Mapped to model_reasoning_effort."
         ),
     ),
+    runtime_mode: str = typer.Option(
+        DEFAULT_RUNTIME_MODE,
+        "--runtime-mode",
+        help=f"Worker runtime mode ({RUNTIME_MODE_HELP}).",
+    ),
     data_dir: Path = typer.Option(Path("./var"), "--data-dir"),
     root: Path | None = typer.Option(None, "--root", help="Pipeline-pack root."),
     workspace_root: Path | None = typer.Option(
@@ -1741,6 +1812,7 @@ def run_create_command(
     farm_root = _resolve_farm_root_or_die(root)
     model_override = _resolve_model_override_or_die(model)
     effort_override = _resolve_reasoning_effort_override_or_die(reasoning_effort)
+    selected_runtime_mode = _resolve_runtime_mode_or_die(runtime_mode)
     workspace_override = _resolve_workspace_root_override_or_die(workspace_root)
     codex_home_override = _resolve_codex_home_override_or_die(codex_home)
     output_schema_override = _resolve_output_schema_override_or_die(output_schema)
@@ -1774,8 +1846,10 @@ def run_create_command(
         "out": str(output_dir_resolved),
         "glob": glob_pattern,
         "farm_root": str(farm_root),
+        "runtime_mode": selected_runtime_mode,
         "heads_up_enabled": heads_up,
         "heads_up_max_tips": heads_up_max_tips,
+        **default_session_runtime_config(),
     }
     if workspace_override is not None:
         config["workspace_root"] = str(workspace_override)
@@ -1798,6 +1872,7 @@ def run_create_command(
         glob_pattern=glob_pattern,
         data_dir=data_dir_resolved,
         config=config,
+        runtime_mode=selected_runtime_mode,
         resolved_model=selected_model,
         resolved_reasoning_effort=selected_effort,
         resolved_output_schema_path=selected_output_schema,
@@ -1816,6 +1891,7 @@ def run_create_command(
         "farm_root": str(farm_root),
         "workspace_root": str(workspace_override) if workspace_override is not None else None,
         "codex_execution_context": spec.codex_execution_context,
+        "runtime_mode": selected_runtime_mode,
         "codex_home_path": str(selected_codex_home) if selected_codex_home is not None else None,
         "codex_model": selected_model,
         "codex_reasoning_effort": selected_effort,
@@ -2354,6 +2430,7 @@ def worker_command(
     data_dir_resolved = resolve_data_dir(data_dir)
     _init_data_dir(data_dir_resolved)
     precheck_env_overrides = None
+    selected_runtime_mode = DEFAULT_RUNTIME_MODE
     if run_id is not None:
         conn = open_db(db_path_for_data_dir(data_dir_resolved))
         init_db(conn)
@@ -2362,6 +2439,9 @@ def worker_command(
         except KeyError as exc:
             raise typer.BadParameter(str(exc)) from exc
         run_config = _parse_json_object(run.get("config_json"))
+        selected_runtime_mode = _resolve_runtime_mode_or_die(
+            str(run_config.get("runtime_mode") or DEFAULT_RUNTIME_MODE)
+        )
         precheck_env_overrides = _codex_home_env_overrides(
             _config_path(run_config.get("codex_home_path"))
         )
@@ -2372,7 +2452,12 @@ def worker_command(
     )
 
     effective_worker_id = worker_id or f"worker-{uuid.uuid4().hex[:8]}"
-    code = worker_loop(
+    worker_target = worker_loop
+    if is_session_runtime(selected_runtime_mode):
+        from .session_runtime import worker_session_loop
+
+        worker_target = worker_session_loop
+    code = worker_target(
         data_dir=data_dir_resolved,
         worker_id=effective_worker_id,
         run_id=run_id,
@@ -2391,7 +2476,7 @@ def process_command(
     pipeline: str = typer.Option(..., "--pipeline", help="Pipeline ID."),
     in_dir: Path = typer.Option(..., "--in", exists=True, file_okay=False, dir_okay=True),
     out_dir: Path = typer.Option(..., "--out", file_okay=False, dir_okay=True),
-    workers: int = typer.Option(8, "--workers", min=1),
+    workers: int | None = typer.Option(None, "--workers"),
     model: str | None = typer.Option(
         None,
         "--model",
@@ -2410,6 +2495,11 @@ def process_command(
             "(none, minimal, low, medium, high, xhigh). "
             "Mapped to model_reasoning_effort."
         ),
+    ),
+    runtime_mode: str = typer.Option(
+        DEFAULT_RUNTIME_MODE,
+        "--runtime-mode",
+        help=f"Worker runtime mode ({RUNTIME_MODE_HELP}).",
     ),
     data_dir: Path = typer.Option(Path("./var"), "--data-dir"),
     glob_pattern: str = typer.Option("", "--glob", help="Input glob override."),
@@ -2501,6 +2591,7 @@ def process_command(
     farm_root = _resolve_farm_root_or_die(root)
     model_override = _resolve_model_override_or_die(model)
     effort_override = _resolve_reasoning_effort_override_or_die(reasoning_effort)
+    selected_runtime_mode = _resolve_runtime_mode_or_die(runtime_mode)
     workspace_override = _resolve_workspace_root_override_or_die(workspace_root)
     codex_home_override = _resolve_codex_home_override_or_die(codex_home)
     output_schema_override = _resolve_output_schema_override_or_die(output_schema)
@@ -2531,6 +2622,10 @@ def process_command(
         env_overrides=_codex_home_env_overrides(selected_codex_home),
     )
     selected_output_schema = output_schema_override or spec.output_schema_path
+    effective_workers = _resolve_effective_workers_or_die(
+        runtime_mode=selected_runtime_mode,
+        workers=workers,
+    )
 
     data_dir_resolved = resolve_data_dir(data_dir)
     _init_data_dir(data_dir_resolved)
@@ -2542,10 +2637,12 @@ def process_command(
         "in": str(input_dir_resolved),
         "out": str(output_dir_resolved),
         "glob": selected_glob,
-        "workers": workers,
+        "workers": effective_workers,
         "farm_root": str(farm_root),
+        "runtime_mode": selected_runtime_mode,
         "heads_up_enabled": heads_up,
         "heads_up_max_tips": heads_up_max_tips,
+        **default_session_runtime_config(),
     }
     if workspace_override is not None:
         config["workspace_root"] = str(workspace_override)
@@ -2569,6 +2666,7 @@ def process_command(
         glob_pattern=selected_glob,
         data_dir=data_dir_resolved,
         config=config,
+        runtime_mode=selected_runtime_mode,
         resolved_model=selected_model,
         resolved_reasoning_effort=selected_effort,
         resolved_output_schema_path=selected_output_schema,
@@ -2599,7 +2697,7 @@ def process_command(
             event="run_started",
             payload={
                 **start_snapshot,
-                "workers": workers,
+                "workers": effective_workers,
             },
         )
 
@@ -2615,11 +2713,12 @@ def process_command(
     code, status, worker_exit_codes = _run_workers(
         run_id=run_id,
         data_dir=data_dir_resolved,
-        workers=workers,
+        workers=effective_workers,
         lease_seconds=lease_seconds,
         max_attempts=max_attempts,
         poll_seconds=1.0,
         farm_root=farm_root,
+        runtime_mode=selected_runtime_mode,
         json_output=json_output,
         progress_callback=progress_snapshot_callback,
     )
@@ -2661,6 +2760,12 @@ def process_command(
         )
 
     if json_output:
+        summary_conn = open_db(db_path_for_data_dir(data_dir_resolved))
+        init_db(summary_conn)
+        try:
+            session_summary = summarize_worker_sessions_for_run(summary_conn, run_id=run_id)
+        finally:
+            summary_conn.close()
         payload = {
             **_status_payload(status),
             "input_dir": str(input_dir_resolved),
@@ -2668,6 +2773,8 @@ def process_command(
             "farm_root": str(farm_root),
             "workspace_root": str(workspace_override) if workspace_override is not None else None,
             "codex_execution_context": spec.codex_execution_context,
+            "runtime_mode": selected_runtime_mode,
+            "effective_workers": effective_workers,
             "codex_home_path": str(selected_codex_home) if selected_codex_home is not None else None,
             "codex_model": selected_model,
             "codex_reasoning_effort": selected_effort,
@@ -2680,6 +2787,11 @@ def process_command(
             "heads_up_tips_added": heads_up_tips_added,
             "progress_events_enabled": progress_events,
             "incremental": incremental_summary,
+            "session_count": session_summary["session_count"],
+            "fresh_session_count": session_summary["fresh_session_count"],
+            "tasks_per_session_summary": session_summary["tasks_per_session_summary"],
+            "session_turn_count_total": session_summary["session_turn_count_total"],
+            "session_failures": session_summary["session_failures"],
             "worker_exit_codes": worker_exit_codes,
             "exit_code": code,
         }
@@ -2724,6 +2836,11 @@ def go_command(
             "(none, minimal, low, medium, high, xhigh). "
             "Mapped to model_reasoning_effort."
         ),
+    ),
+    runtime_mode: str = typer.Option(
+        DEFAULT_RUNTIME_MODE,
+        "--runtime-mode",
+        help=f"Worker runtime mode ({RUNTIME_MODE_HELP}).",
     ),
     root: Path | None = typer.Option(None, "--root", help="Pipeline-pack root."),
     workspace_root: Path | None = typer.Option(
@@ -2783,6 +2900,7 @@ def go_command(
     farm_root = _resolve_farm_root_or_die(root)
     model_override = _resolve_model_override_or_die(model)
     effort_override = _resolve_reasoning_effort_override_or_die(reasoning_effort)
+    selected_runtime_mode = _resolve_runtime_mode_or_die(runtime_mode)
     workspace_override = _resolve_workspace_root_override_or_die(workspace_root)
     codex_home_override = _resolve_codex_home_override_or_die(codex_home)
     output_schema_override = _resolve_output_schema_override_or_die(output_schema)
@@ -2834,9 +2952,18 @@ def go_command(
     )
     selected_output_schema = output_schema_override or selected.output_schema_path
 
-    worker_count = typer.prompt("Worker count", default="8")
+    default_worker_count = str(
+        _resolve_effective_workers_or_die(
+            runtime_mode=selected_runtime_mode,
+            workers=None,
+        )
+    )
+    worker_count = typer.prompt("Worker count", default=default_worker_count)
     try:
-        workers = max(1, int(worker_count))
+        workers = _resolve_effective_workers_or_die(
+            runtime_mode=selected_runtime_mode,
+            workers=int(worker_count),
+        )
     except ValueError as exc:
         raise typer.BadParameter("Worker count must be an integer") from exc
     input_dir = (data_dir_resolved / "inbox").resolve()
@@ -2855,8 +2982,10 @@ def go_command(
         "workers": workers,
         "mode": "go",
         "farm_root": str(farm_root),
+        "runtime_mode": selected_runtime_mode,
         "heads_up_enabled": heads_up,
         "heads_up_max_tips": heads_up_max_tips,
+        **default_session_runtime_config(),
     }
     if workspace_override is not None:
         config["workspace_root"] = str(workspace_override)
@@ -2880,6 +3009,7 @@ def go_command(
         glob_pattern=selected.input_glob_default,
         data_dir=data_dir_resolved,
         config=config,
+        runtime_mode=selected_runtime_mode,
         resolved_model=selected_model,
         resolved_reasoning_effort=selected_effort,
         resolved_output_schema_path=selected_output_schema,
@@ -2905,6 +3035,7 @@ def go_command(
         max_attempts=3,
         poll_seconds=1.0,
         farm_root=farm_root,
+        runtime_mode=selected_runtime_mode,
         json_output=False,
     )
     if heads_up and status["status"] in {"done", "error"}:

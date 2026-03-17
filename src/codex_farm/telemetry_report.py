@@ -47,6 +47,7 @@ def build_telemetry_report(
     limit: int = 500,
     recommendations_limit: int = 10,
     terminal_errors: list[str] | None = None,
+    session_summary: dict[str, object] | None = None,
     warnings: list[str] | None = None,
 ) -> dict[str, object]:
     """Build machine-usable telemetry report and recommendation payload."""
@@ -366,6 +367,7 @@ def build_telemetry_report(
         heads_up_effectiveness_summary=heads_up_effectiveness_summary,
         rows_without_turn_completed=rows_without_turn_completed,
         rows_with_no_events=codex_rows_with_no_events,
+        session_summary=session_summary,
         recommendations_limit=safe_rec_limit,
     )
     tuning_playbook = _build_tuning_playbook(
@@ -379,6 +381,7 @@ def build_telemetry_report(
         retry_effectiveness_summary=retry_effectiveness_summary,
         heads_up_effectiveness_summary=heads_up_effectiveness_summary,
         model_reasoning_breakdown=model_reasoning_breakdown,
+        session_summary=session_summary,
     )
 
     report = {
@@ -414,6 +417,19 @@ def build_telemetry_report(
             "tokens_reasoning_avg_per_call": (
                 int(round(reasoning_token_total / total_rows)) if total_rows else 0
             ),
+            "session_summary": session_summary
+            or {
+                "session_count": 0,
+                "fresh_session_count": 0,
+                "session_turn_count_total": 0,
+                "session_failures": 0,
+                "tasks_per_session_summary": {
+                    "min": 0,
+                    "max": 0,
+                    "avg": 0.0,
+                    "values": [],
+                },
+            },
         },
         "failure_patterns": {
             "failure_categories": _sorted_count_rows(
@@ -548,6 +564,7 @@ def _build_recommendations(
     heads_up_effectiveness_summary: dict[str, object],
     rows_without_turn_completed: int,
     rows_with_no_events: int,
+    session_summary: dict[str, object] | None,
     recommendations_limit: int,
 ) -> dict[str, list[dict[str, object]]]:
     recommendations: dict[str, list[dict[str, object]]] = {
@@ -590,6 +607,12 @@ def _build_recommendations(
 
     nonzero_no_payload = failure_category_counts.get("nonzero_exit_no_payload", 0)
     zero_no_payload = failure_category_counts.get("zero_exit_no_payload", 0)
+    session_map = session_summary if isinstance(session_summary, dict) else {}
+    session_count = _as_int(session_map.get("session_count")) or 0
+    session_failures = _as_int(session_map.get("session_failures")) or 0
+    tasks_per_session = session_map.get("tasks_per_session_summary")
+    tasks_per_session_map = tasks_per_session if isinstance(tasks_per_session, dict) else {}
+    avg_tasks_per_session = _as_float(tasks_per_session_map.get("avg"))
     if nonzero_no_payload + zero_no_payload >= 1:
         missing_count = nonzero_no_payload + zero_no_payload
         add(
@@ -644,6 +667,33 @@ def _build_recommendations(
             action="Lower worker concurrency and apply backoff before rerunning this pipeline.",
             reason="Rate-limit signals were detected in telemetry.",
             evidence={"rate_limit_rows": rate_limit_rows},
+        )
+
+    if session_failures > 0:
+        add(
+            "runtime",
+            code="runtime.session_resets_detected",
+            priority="medium",
+            action="Inspect session reset causes; repeated resets reduce the benefit of session-aware mode.",
+            reason="One or more persisted worker sessions ended in a non-happy-path state.",
+            evidence={
+                "session_failures": session_failures,
+                "session_count": session_count,
+            },
+        )
+
+    if session_count > 1 and avg_tasks_per_session is not None and avg_tasks_per_session <= 1.25:
+        add(
+            "runtime",
+            code="runtime.session_reuse_low",
+            priority="low",
+            action="Increase per-session task budget or review per-task `--cd` churn if session reuse is expected to amortize boot cost.",
+            reason="Most persisted sessions handled only one task, so boot cost likely dominates session-aware mode.",
+            evidence={
+                "session_count": session_count,
+                "avg_tasks_per_session": avg_tasks_per_session,
+                "tasks_per_session_summary": tasks_per_session_map,
+            },
         )
 
     top_schema_paths = sorted(
@@ -910,6 +960,7 @@ def _build_tuning_playbook(
     retry_effectiveness_summary: dict[str, object],
     heads_up_effectiveness_summary: dict[str, object],
     model_reasoning_breakdown: list[dict[str, object]],
+    session_summary: dict[str, object] | None,
 ) -> dict[str, list[dict[str, object]]]:
     playbook: dict[str, list[dict[str, object]]] = {
         "prompt_edits": [],
@@ -1070,6 +1121,40 @@ def _build_tuning_playbook(
             change="Reduce worker count (for example, 50%) and introduce exponential backoff between retries.",
             trigger="rate_limit_rows > 0",
             evidence={"rate_limit_rows": rate_limit_rows},
+        )
+
+    session_map = session_summary if isinstance(session_summary, dict) else {}
+    session_count = _as_int(session_map.get("session_count")) or 0
+    session_failures = _as_int(session_map.get("session_failures")) or 0
+    tasks_per_session = session_map.get("tasks_per_session_summary")
+    tasks_per_session_map = tasks_per_session if isinstance(tasks_per_session, dict) else {}
+    avg_tasks_per_session = _as_float(tasks_per_session_map.get("avg"))
+    if session_failures > 0:
+        add(
+            "runtime_tuning",
+            item_id="runtime.session_reset_review",
+            priority="medium",
+            target="session_reset_on_error/session_debugging",
+            change="Inspect session reset causes before raising concurrency expectations for session-aware runs.",
+            trigger="session_failures > 0",
+            evidence={
+                "session_failures": session_failures,
+                "session_count": session_count,
+            },
+        )
+    if session_count > 1 and avg_tasks_per_session is not None and avg_tasks_per_session <= 1.25:
+        add(
+            "runtime_tuning",
+            item_id="runtime.session_budget_review",
+            priority="low",
+            target="session_task_budget/cd_dir_stability",
+            change="Increase session task budget or reduce per-task cd churn if boot amortization matters for this pipeline.",
+            trigger="avg_tasks_per_session <= 1.25 with multiple sessions",
+            evidence={
+                "session_count": session_count,
+                "avg_tasks_per_session": avg_tasks_per_session,
+                "tasks_per_session_summary": tasks_per_session_map,
+            },
         )
 
     if output_preview_truncated_rows >= max(2, int(total_rows * 0.2)):

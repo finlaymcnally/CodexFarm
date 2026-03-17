@@ -4,7 +4,8 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from codex_farm.cli import app
-from codex_farm.codex_exec import CodexExecResult
+from codex_farm.codex_exec import CodexExecResult, CodexSessionTurnResult
+from codex_farm.db import init_db, list_tasks_for_run, open_db
 
 
 runner = CliRunner()
@@ -71,6 +72,140 @@ def test_process_command_smoke_with_mocked_codex(monkeypatch, tmp_path: Path) ->
     assert (output_dir / "r0.json").exists()
     assert (output_dir / "r1.json").exists()
     assert (output_dir / "r2.json").exists()
+
+
+def test_process_agentic_runtime_reuses_one_session(monkeypatch, tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    data_dir = tmp_path / "var"
+    input_dir.mkdir(parents=True)
+
+    for idx in range(3):
+        sample = {
+            "@context": "https://schema.org",
+            "@type": "Recipe",
+            "name": f"Recipe {idx}",
+            "recipeIngredient": ["1 cup water"],
+            "recipeInstructions": ["Boil water."],
+        }
+        (input_dir / f"r{idx}.json").write_text(json.dumps(sample), encoding="utf-8")
+
+    session_resume_key = "session-abc"
+    started_prompts: list[str] = []
+    resumed_prompts: list[str] = []
+
+    def fake_start_codex_session(**kwargs):
+        started_prompts.append(str(kwargs["prompt"]))
+        output_path = kwargs["output_path"]
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        name = Path(kwargs["prompt"].split("Input file path: ")[-1].strip().splitlines()[0]).stem
+        output_path.write_text(json.dumps(_fake_recipe(name)), encoding="utf-8")
+        return CodexSessionTurnResult(
+            ok=True,
+            exit_code=0,
+            stderr_tail="",
+            resume_key=session_resume_key,
+            thread_id=session_resume_key,
+        )
+
+    def fake_resume_codex_session(**kwargs):
+        resumed_prompts.append(str(kwargs["prompt"]))
+        assert kwargs["resume_key"] == session_resume_key
+        output_path = kwargs["output_path"]
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        name = Path(kwargs["prompt"].split("Input file path: ")[-1].strip().splitlines()[0]).stem
+        output_path.write_text(json.dumps(_fake_recipe(name)), encoding="utf-8")
+        return CodexSessionTurnResult(
+            ok=True,
+            exit_code=0,
+            stderr_tail="",
+            resume_key=session_resume_key,
+            thread_id=session_resume_key,
+        )
+
+    monkeypatch.setattr("codex_farm.session_runtime.start_codex_session", fake_start_codex_session)
+    monkeypatch.setattr(
+        "codex_farm.session_runtime.resume_codex_session",
+        fake_resume_codex_session,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "process",
+            "--pipeline",
+            "recipe.schemaorg.normalize.v1",
+            "--runtime-mode",
+            "structured_loop_agentic_v1",
+            "--in",
+            str(input_dir),
+            "--out",
+            str(output_dir),
+            "--data-dir",
+            str(data_dir),
+            "--no-login-precheck",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["runtime_mode"] == "structured_loop_agentic_v1"
+    assert payload["effective_workers"] == 1
+    assert payload["session_count"] == 1
+    assert payload["fresh_session_count"] == 1
+    assert payload["session_turn_count_total"] == 3
+    assert payload["tasks_per_session_summary"]["values"] == [3]
+    assert len(started_prompts) == 1
+    assert len(resumed_prompts) == 2
+    assert (output_dir / "r0.json").exists()
+    assert (output_dir / "r1.json").exists()
+    assert (output_dir / "r2.json").exists()
+
+    session_json = output_dir / ".codex-farm-sessions" / "1" / "session.json"
+    assert session_json.exists()
+    session_payload = json.loads(session_json.read_text(encoding="utf-8"))
+    assert session_payload["task_count"] == 3
+    assert session_payload["turn_count"] == 3
+    assert session_payload["resume_key"] == session_resume_key
+
+    conn = open_db(data_dir / "codex_farm.sqlite3")
+    init_db(conn)
+    tasks = list_tasks_for_run(conn, run_id=payload["run_id"])
+    assert {task["session_row_id"] for task in tasks} == {1}
+    assert sum(int(task["fresh_session_started"] or 0) for task in tasks) == 1
+
+
+def test_process_agentic_runtime_rejects_multiple_workers(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    data_dir = tmp_path / "var"
+    input_dir.mkdir(parents=True)
+    (input_dir / "r0.json").write_text(json.dumps({"name": "Recipe 0"}), encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "process",
+            "--pipeline",
+            "recipe.schemaorg.normalize.v1",
+            "--runtime-mode",
+            "structured_loop_agentic_v1",
+            "--workers",
+            "2",
+            "--in",
+            str(input_dir),
+            "--out",
+            str(output_dir),
+            "--data-dir",
+            str(data_dir),
+            "--no-login-precheck",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--workers=1" in result.stderr
 
 
 def test_process_command_recovers_after_transient_rate_limits(

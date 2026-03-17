@@ -9,6 +9,7 @@ from codex_farm.run_assets import (
     freeze_run_assets,
     load_frozen_run_assets,
 )
+from codex_farm.runtime_modes import CLASSIC_TASK_FARM_V1
 
 
 def _write_pack(root: Path, pipeline_id: str) -> None:
@@ -70,6 +71,7 @@ def test_freeze_run_assets_round_trip(tmp_path: Path) -> None:
         run_id="run-123",
         data_dir=data_dir,
         pipeline=pipeline,
+        runtime_mode=CLASSIC_TASK_FARM_V1,
         resolved_model="gpt-model-override",
         resolved_reasoning_effort="high",
         resolved_output_schema_path=pipeline.output_schema_path,
@@ -94,6 +96,7 @@ def test_freeze_run_assets_round_trip(tmp_path: Path) -> None:
     assert manifest.pipeline_id == pipeline_id
     assert execution.pipeline_id == pipeline_id
     assert execution.codex_model == "gpt-model-override"
+    assert execution.runtime_mode == CLASSIC_TASK_FARM_V1
     assert execution.codex_reasoning_effort == "high"
     assert execution.codex_execution_context == "scratch"
     assert execution.codex_home_profile == "recipe"
@@ -122,6 +125,7 @@ def test_load_frozen_run_assets_rejects_unknown_manifest_version(tmp_path: Path)
         run_id="run-version",
         data_dir=data_dir,
         pipeline=pipeline,
+        runtime_mode=CLASSIC_TASK_FARM_V1,
         resolved_model=pipeline.codex_model,
         resolved_reasoning_effort=pipeline.codex_reasoning_effort,
         resolved_output_schema_path=pipeline.output_schema_path,
@@ -151,6 +155,7 @@ def test_load_frozen_run_assets_rejects_hash_mismatch(tmp_path: Path) -> None:
         run_id="run-hash",
         data_dir=data_dir,
         pipeline=pipeline,
+        runtime_mode=CLASSIC_TASK_FARM_V1,
         resolved_model=pipeline.codex_model,
         resolved_reasoning_effort=None,
         resolved_output_schema_path=pipeline.output_schema_path,
@@ -178,6 +183,7 @@ def test_freeze_run_assets_rejects_duplicate_run_id(tmp_path: Path) -> None:
         run_id="same-run",
         data_dir=data_dir,
         pipeline=pipeline,
+        runtime_mode=CLASSIC_TASK_FARM_V1,
         resolved_model=pipeline.codex_model,
         resolved_reasoning_effort=None,
         resolved_output_schema_path=pipeline.output_schema_path,
@@ -187,6 +193,7 @@ def test_freeze_run_assets_rejects_duplicate_run_id(tmp_path: Path) -> None:
             run_id="same-run",
             data_dir=data_dir,
             pipeline=pipeline,
+            runtime_mode=CLASSIC_TASK_FARM_V1,
             resolved_model=pipeline.codex_model,
             resolved_reasoning_effort=None,
             resolved_output_schema_path=pipeline.output_schema_path,

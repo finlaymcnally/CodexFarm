@@ -33,6 +33,7 @@ If you change behavior here, you are changing success/failure semantics across b
 
 - `src/codex_farm/cli.py` (`doctor`, `one`)
 - `src/codex_farm/worker.py` (batch task execution path)
+- `src/codex_farm/session_runtime.py` (session-aware batch path)
 
 ## Boundary contract at a glance
 
@@ -61,7 +62,7 @@ Downstream behavior:
 
 ## 1) Codex subprocess contract (`codex_exec.py`)
 
-`run_codex_exec(...)` constructs this command shape:
+`run_codex_exec(...)` constructs this classic one-shot command shape:
 
 ```text
 codex --ask-for-approval <mode> exec \
@@ -90,6 +91,13 @@ Important details:
 - Trace classification is intentionally strict: CodexFarm only counts explicit top-level `event.type` values and explicit nested `item.type` values on wrapped `item.completed` events. Payload text inside ordinary `agent_message` outputs must not count as action or reasoning evidence.
 - After stdout parsing, `run_codex_exec(...)` also correlates `thread.started.thread_id` against local rollout files under `CODEX_HOME/sessions/.../rollout-*.jsonl`. That best-effort harvest is observability only; it must never change task success/failure semantics.
 - Telemetry rows also include parsed event types/counts, output payload fingerprint/preview, normalized failure categories, rollout reasoning classification, and structured pass-forward context (retry error carry-forward and applied Heads Up tips) for caller-side prompt tuning.
+
+Session-aware runtime additions:
+
+- `start_codex_session(...)` reuses the same parsing/trace/telemetry path but boots a reusable Codex session with plain `codex exec`.
+- `resume_codex_session(...)` runs `codex exec resume <resume_key> --output-last-message ... --json <prompt>`.
+- Resumed turns do not expose per-turn `--output-schema`, so `structured_loop_agentic_v1` always treats the captured last message as an untrusted payload and validates it locally after the subprocess returns.
+- A live local smoke confirmed that the captured `thread.started.thread_id` works as the persisted `resume_key`, but resumed turns can still emit upstream model-mismatch warnings because resume does not accept `--model`.
 
 ## 2) Output acceptance rules (`codex_exec.py`)
 

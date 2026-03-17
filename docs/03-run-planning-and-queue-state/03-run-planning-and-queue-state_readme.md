@@ -105,7 +105,19 @@ Columns used by this chunk:
 - `last_heartbeat_at` (most recent owner heartbeat timestamp)
 - `error` (latest error message, truncated to 2000 chars by db writers)
 - `output_path` (absolute output path for completed tasks)
+- additive session linkage: `session_row_id`, `session_task_index`, `session_turn_index`, `fresh_session_started`
 - `created_at`, `updated_at`
+
+### `worker_sessions` table
+
+Session-aware runs add one row per persistent Codex conversation:
+
+- `session_row_id` (autoincrement PK)
+- `run_id`, `worker_id`, `runtime_mode`
+- `resume_key`, `thread_id`
+- `status`, `started_at`, `finished_at`
+- `turn_count`, `task_count`, `last_task_id`, `end_reason`
+- `codex_home_path`, `cd_dir`
 
 ### `run_throttle_state` table
 
@@ -179,8 +191,10 @@ Planning writes config in `cli.run_create_command` / `cli.process_command`.
 Current keys:
 
 - always: `pipeline`, `in`, `out`, `glob`, `farm_root`
-- `process` also includes: `workers`
+- run-based execution also includes: `runtime_mode`
+- `process`/`go` also include: `workers` (the persisted effective worker count after runtime-mode guardrails)
 - always: `heads_up_enabled`, `heads_up_max_tips`
+- always on new runs: `session_task_budget`, `max_turns_per_task`, `session_reset_on_error`
 - always for new runs: `frozen_assets` object with:
   - `version`
   - `manifest_relpath` (relative path to `<data_dir>/run_assets/<run_id>/manifest.json`)

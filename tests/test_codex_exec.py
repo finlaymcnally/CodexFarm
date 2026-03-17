@@ -13,7 +13,9 @@ from codex_farm.codex_exec import (
     _persist_trace_artifact,
     extract_retry_after_seconds,
     is_auth_failure_message,
+    resume_codex_session,
     run_codex_exec,
+    start_codex_session,
 )
 from codex_farm.rollout_reasoning import harvest_rollout_reasoning
 
@@ -1143,3 +1145,91 @@ def test_extract_retry_after_seconds_parses_minutes_hint() -> None:
 )
 def test_is_auth_failure_message(message: str, expected: bool) -> None:
     assert is_auth_failure_message(message) is expected
+
+
+def test_start_and_resume_codex_session_record_resume_metadata(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "out.json"
+    usage_log = tmp_path / "codex_exec_activity.csv"
+    schema_path = tmp_path / "schema.json"
+    schema_path.write_text("{}", encoding="utf-8")
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        output_index = cmd.index("--output-last-message") + 1
+        Path(cmd[output_index]).write_text(
+            json.dumps({"ok": "OK", "source_path": "/tmp/input.json"}),
+            encoding="utf-8",
+        )
+        stdout = (
+            '{"type":"thread.started","thread_id":"thread-123"}\n'
+            '{"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":4,"total_tokens":16}}\n'
+        )
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    start = start_codex_session(
+        cd_dir=tmp_path,
+        prompt="boot turn",
+        model="gpt-5.3-codex-spark",
+        sandbox="read-only",
+        ask_for_approval="never",
+        web_search="disabled",
+        output_path=output_path,
+        timeout_seconds=30,
+        output_schema_logical_path=schema_path,
+        usage_log_csv=usage_log,
+        usage_context={
+            "runtime_mode": "structured_loop_agentic_v1",
+            "session_row_id": 7,
+            "session_task_index": 1,
+            "session_turn_index": 1,
+            "turn_kind": "start",
+        },
+    )
+
+    assert start.ok is True
+    assert start.thread_id == "thread-123"
+    assert start.resume_key == "thread-123"
+    assert calls[0][0:4] == ["codex", "--ask-for-approval", "never", "exec"]
+
+    resume = resume_codex_session(
+        resume_key="thread-123",
+        cd_dir=tmp_path,
+        prompt="follow-up turn",
+        model="gpt-5.3-codex-spark",
+        sandbox="read-only",
+        ask_for_approval="never",
+        web_search="disabled",
+        output_path=output_path,
+        timeout_seconds=30,
+        output_schema_logical_path=schema_path,
+        usage_log_csv=usage_log,
+        usage_context={
+            "runtime_mode": "structured_loop_agentic_v1",
+            "session_row_id": 7,
+            "resume_key": "thread-123",
+            "session_task_index": 2,
+            "session_turn_index": 2,
+            "turn_kind": "resume",
+        },
+    )
+
+    assert resume.ok is True
+    assert calls[1][:4] == ["codex", "exec", "resume", "thread-123"]
+
+    rows = _read_rows(usage_log)
+    assert len(rows) == 2
+    assert rows[0]["runtime_mode"] == "structured_loop_agentic_v1"
+    assert rows[0]["session_row_id"] == "7"
+    assert rows[0]["resume_key"] == ""
+    assert rows[0]["session_task_index"] == "1"
+    assert rows[0]["session_turn_index"] == "1"
+    assert rows[0]["turn_kind"] == "start"
+    assert rows[1]["resume_key"] == "thread-123"
+    assert rows[1]["turn_kind"] == "resume"
